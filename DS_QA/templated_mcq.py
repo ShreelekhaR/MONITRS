@@ -6,6 +6,7 @@ import os
 import re
 from datetime import datetime
 from copy import deepcopy
+import pandas as pd
 
 # Reuse the existing geo_to_pixel function
 def geo_to_pixel(locations, center, radius=5):
@@ -40,8 +41,8 @@ class MultipleChoiceGenerator:
             "temporal_grounding": {
                 "templates": [
                     "Here are the dates for the images: {dates}. On which date did the {event_type} begin?",
-                    "Looking at these satellite images from {dates}, when did the {event_description} start?",
-                    "Based on this sequence of satellite images from {dates}, which date shows the first evidence of {event_description}?"
+                    "Looking at these satellite images from {dates}, when did the {event_type} start?",
+                    "Based on this sequence of satellite images from {dates}, which date shows the first evidence of the {event_type}?"
                 ]
             },
             "event_type": {
@@ -53,9 +54,7 @@ class MultipleChoiceGenerator:
             },
             "location_identification": {
                 "templates": [
-                    "In which location did the {event_type} occur?",
-                    "Where is the {event_description} taking place?",
-                    "Which of these locations was affected by the {event_type}?"
+                    "Where is {location}?",
                 ]
             },
             "event_sequence": {
@@ -124,17 +123,32 @@ class MultipleChoiceGenerator:
         if locations_str and locations_str != '{}':
             locations_str = locations_str.strip('{}')
             location_pairs = locations_str.split('),')
-            
             for pair in location_pairs:
                 if ':' in pair:
-                    name, coords = pair.split(':')
+                    try:
+                        name, coords = pair.split(':')
+                    except:
+                        print(f"Error parsing location pair: {pair}")
+                        continue
+
                     coords = coords[2:]
                     coord1, coord2 = coords.split(',')
                     coords = (float(coord1), float(coord2.strip(')')))
                     name = name.strip().strip('"\'')
                     name = name.strip().strip("'")
+
+                    # clean up name remove any extra spaces and single and double quotes
+                    name = re.sub(r"['\"]", "", name)
+                    name = re.sub(r"\s+", " ", name).strip()
+                    # remove any extra spaces
+                    name = re.sub(r"\s+", " ", name).strip()
+                    #remove slashes 
+                    name = name.replace("/", " ")
+                    # remove backslashes
+                    name = name.replace("\\", " ")
                     
                     locations[name] = coords
+
                     
         return locations
 
@@ -287,9 +301,12 @@ class MultipleChoiceGenerator:
             
         # Get all dates from events
         dates = sorted(list(set(e['date'] for e in events)))
+        if len(dates) < 3:
+            return None
             
         # Get event type and description
-        event_type = self._detect_event_type(events)
+        # event_type = self._detect_event_type(events)
+        event_type = event_data['event_type']
         event_description = self._get_event_description(events)
         
         # Find the beginning date of the event
@@ -317,6 +334,7 @@ class MultipleChoiceGenerator:
         )
         
         return {
+            "type": "temporal_grounding",
             "question": question,
             "options": options,
             "correct_answer": f"{correct_label}",
@@ -330,8 +348,9 @@ class MultipleChoiceGenerator:
             return None
             
         # Detect event type
-        event_type = self._detect_event_type(events)
-        if event_type == "Unknown":
+        # event_type = self._detect_event_type(events)
+        event_type = event_data['event_type']
+        if "disaster" in event_type.lower():
             return None
             
         # Select template
@@ -343,14 +362,12 @@ class MultipleChoiceGenerator:
         # Generate options - use all event types as the option pool
         options, correct_label = self._generate_options(event_type, self.event_types)
         
-        # Create explanation
-        event_description = events[0]["event"][:100] + "..." if len(events[0]["event"]) > 100 else events[0]["event"]
-        
         return {
+            "type": "event_type",
             "question": question,
             "options": options,
             "correct_answer": f"{correct_label}",
-            "explanation": f"The satellite images show a {event_type.lower()} event, as evidenced by {event_description}"
+            "explanation": f"The satellite images show a {event_type.lower()} event."
         }
 
     def create_location_identification_question(self, event_data: Dict) -> Dict:
@@ -362,40 +379,46 @@ class MultipleChoiceGenerator:
             return None
             
         # Detect event type and description
-        event_type = self._detect_event_type(events)
-        event_description = self._get_event_description(events)
+        event_type = event_data['event_type']
         
         # Choose a random location as the correct answer
         location_names = list(locations.keys())
-        correct_location = random.choice(location_names)
+        
+        chosen_location = random.choice(location_names)
+
+        # offer locations in format name: (lat, lon) 
+        chosen_location_coords = locations[chosen_location]
+
+
+        question_location = chosen_location + " (" + str(chosen_location_coords[0]) + ", " + str(chosen_location_coords[1]) + ")"
+
+        # correct pixel coordinates
+        correct_pixel_coords = geo_to_pixel({chosen_location: chosen_location_coords}, event_data['base_coordinates'])
         
         # Select template
         template = random.choice(self.mc_templates["location_identification"]["templates"])
         
         # Generate question
         question = template.format(
-            event_type=event_type,
-            event_description=event_description
+            location=chosen_location
         )
         
-        # Generate additional fake locations if needed
-        all_locations = location_names.copy()
-        if len(all_locations) < 4:
-            fake_locations = [
-                f"North {correct_location}", f"South {correct_location}", 
-                f"East {correct_location}", f"West {correct_location}",
-                "Adjacent County", "Neighboring State", "Central Region", "Coastal Area"
-            ]
-            all_locations.extend(fake_locations)
+        # generate random pixel coordinates for other optionn
+        random_pixel_coords = []
+        for i in range(3):
+            coords_x = random.randint(0, 511)
+            coords_y = random.randint(0, 511)
+            random_pixel_coords.append((coords_x, coords_y))
         
         # Generate options
-        options, correct_label = self._generate_options(correct_location, all_locations)
+        options, correct_label = self._generate_options(correct_pixel_coords, random_pixel_coords + [correct_pixel_coords])
         
         return {
+            "type": "location_identification",
             "question": question,
             "options": options,
             "correct_answer": f"{correct_label}",
-            "explanation": f"The {event_type.lower()} occurred in {correct_location} as shown in the satellite imagery."
+            "explanation": f"The {chosen_location} is located at {correct_pixel_coords} as shown in the satellite imagery."
         }
 
     def create_damage_assessment_question(self, event_data: Dict) -> Dict:
@@ -407,7 +430,8 @@ class MultipleChoiceGenerator:
             return None
             
         # Detect event type and description
-        event_type = self._detect_event_type(events)
+        # event_type = self._detect_event_type(events)
+        event_type = event_data['event_type']
         event_description = self._get_event_description(events)
         
         # Choose a random location as the most damaged area
@@ -427,6 +451,7 @@ class MultipleChoiceGenerator:
         options, correct_label = self._generate_options(most_damaged, location_names)
         
         return {
+            "type": "damage_assessment",
             "question": question,
             "options": options,
             "correct_answer": f"{correct_label}",
@@ -461,7 +486,8 @@ class MultipleChoiceGenerator:
             sequences.append(incorrect_sequence)
         
         # Detect event type
-        event_type = self._detect_event_type(events)
+        # event_type = self._detect_event_type(events)
+        event_type = event_data['event_type']
         
         # Select template
         template = random.choice(self.mc_templates["event_sequence"]["templates"])
@@ -480,6 +506,7 @@ class MultipleChoiceGenerator:
         options, correct_label = self._generate_options(correct_sequence, sequences)
         
         return {
+            "type": "event_sequence",
             "question": question,
             "options": options,
             "correct_answer": f"{correct_label}",
@@ -527,7 +554,8 @@ class MultipleChoiceGenerator:
                 # Add to examples
                 example = deepcopy(base_example)
                 example.update({
-                    "task": "multiple_choice",
+                    # we want the type of question to be the same as the type of question from template
+                    "task": question_data['type'],
                     "conversations": [
                         {
                             "from": "human",
@@ -547,7 +575,7 @@ class MultipleChoiceGenerator:
 
     def process_file(self, 
                     input_lines: List[str], 
-                    image_paths: Dict[str, List[str]]) -> List[Dict]:
+                    image_paths: Dict[str, List[str]],event_types:Dict[str, str] ) -> List[Dict]:
         """Process the entire file and create multiple choice examples."""
         dataset = []
         # Reset global ID counter
@@ -556,22 +584,36 @@ class MultipleChoiceGenerator:
         for line in input_lines:
             if not line.strip():
                 continue
-                
-            try:
-                event_data = self.parse_line(line)
-                
-                paths = image_paths.get(event_data['id'])
-                if not paths:
-                    print(f"No image paths found for ID: {event_data['id']}")
-                    continue
-                
-                # Create multiple choice examples
-                examples = self.create_multiple_choice_example(event_data, paths)
-                dataset.extend(examples)
-                
-            except Exception as e:
-                print(f"Error processing line: {e}")
+            
+            event_data = self.parse_line(line)
+            # add event type to event_data
+            event_data['event_type'] = event_types.get(event_data['id'], "natural disaster")
+            
+            paths = image_paths.get(event_data['id'])
+            if not paths:
+                print(f"No image paths found for ID: {event_data['id']}")
                 continue
+            
+            # Create multiple choice examples
+            examples = self.create_multiple_choice_example(event_data, paths)
+            dataset.extend(examples)
+            # try:
+            #     event_data = self.parse_line(line)
+            #     # add event type to event_data
+            #     event_data['event_type'] = event_types.get(event_data['id'], "natural disaster")
+                
+            #     paths = image_paths.get(event_data['id'])
+            #     if not paths:
+            #         print(f"No image paths found for ID: {event_data['id']}")
+            #         continue
+                
+            #     # Create multiple choice examples
+            #     examples = self.create_multiple_choice_example(event_data, paths)
+            #     dataset.extend(examples)
+                
+            # except Exception as e:
+            #     print(f"Error processing line: {e}")
+            #     continue
                 
         return dataset
 
@@ -607,6 +649,12 @@ if __name__ == "__main__":
     # Read CSV2 format
     file = open('reorganized_total_data.csv', 'r')
     lines = file.readlines()
+
+    # find event types from FEMA_filtered_processed.csv
+    # read csv as csv
+    df = pd.read_csv('FEMA_filtered_processed.csv', header=0)
+    
+
     
     print("number of lines in file: ", len(lines))
 
@@ -624,11 +672,18 @@ if __name__ == "__main__":
     image_paths = {}
     for id_num in ids:
         image_paths[id_num] = generator.generate_image_paths(id_num)
+
+    # get event type per id
+    event_types = {}
+    for id_num in ids:
+        # df incidentType where index is id_num
+        event_type_ind = df.loc[df['index'] == int(id_num), 'incidentType'].values[0]
+        event_types[id_num] = event_type_ind
     
     print("number of image paths: ", len(image_paths))
     
     # Process the file (limit to first 10 lines for testing)
-    dataset = generator.process_file(lines, image_paths)
+    dataset = generator.process_file(lines, image_paths, event_types)
     
     # Save the dataset
     with open('train_multiple_choice.json', 'w') as f:
@@ -646,7 +701,7 @@ if __name__ == "__main__":
         image_paths[id_num] = generator.generate_image_paths(id_num)
     print("number of image paths: ", len(image_paths))
     # Process the file (limit to first 10 lines for testing)
-    dataset = generator.process_file(lines, image_paths)
+    dataset = generator.process_file(lines, image_paths, event_types)
     # Save the dataset
     with open('test_multiple_choice.json', 'w') as f:
         json.dump(dataset, f, indent=2)
