@@ -3,13 +3,12 @@
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import transformers
 from tqdm import tqdm
 import google.generativeai as genai
 import os
 import datetime
 import calendar
-from googleapi import google
+# from googleapi import google
 
 from os.path import join, isfile, isdir
 from os import mkdir
@@ -21,7 +20,7 @@ from dateutil.relativedelta import relativedelta
 # import wget
 import ee
 
-ee.Initialize(project='ee-ssr234-new')
+ee.Initialize(project='your-project-id')
 import pandas as pd
 from tqdm import tqdm
 from PIL import Image
@@ -30,13 +29,13 @@ from time import sleep
 
 # import multiprocessing as mp
 # create black_list
-black_list = ['google','wikipedia', 'youtube', 'twitter', 'facebook', 'instagram', 'linkedin', 'pinterest', 'reddit', 'quora', 'tiktok', 'tumblr']
+black_list = ['google','wikipedia', 'youtube', 'twitter', 'facebook', 'instagram', 'linkedin', 'pinterest', 'reddit', 'quora', 'tiktok', 'tumblr', 'gov']
 white_list = ['.com', '.org']
 
-genai.configure(api_key="Your_API_Key_Here")  # Replace with your actual API key
-model = genai.GenerativeModel("gemini-1.5-flash")
+genai.configure(api_key="your-key-here")  # Replace with your actual API key
+model = genai.GenerativeModel("gemini-2.0-flash")
 
-geocode_API_key = 'Your_API_Key_Here'  # Replace with your actual API key
+geocode_API_key = 'your-key-here'  # Replace with your actual API key
 
 def mask_s2_clouds(image):
   """Masks clouds in a Sentinel-2 image using the QA band.
@@ -64,15 +63,56 @@ def mask_s2_clouds(image):
 
 
 def summarize_text(text,startdate, enddate):
+
+    prompt = f"""
+        Task: Extract only the event-specific geographical locations mentioned in the provided articles about natural disasters.
+
+        Instructions:
+        1. Carefully review the attached articles about natural disasters and identify ONLY proper noun locations that are directly related to where the disaster occurred or had direct impact.
+
+        2. Focus on extracting:
+        - Specific sites where the event took place (cities, towns, neighborhoods)
+        - Precise natural features affected (specific rivers, mountains, forests, beaches)
+        - Particular infrastructure impacted (named dams, bridges, parks)
+        - Exact regions directly experiencing the disaster effects
+
+        3. Present your response in a simple string list format, with each location separated by a comma.
+
+        4. If a location appears multiple times, include it only ONCE in your list.
+
+        5. If the articles contain NO specific event locations, return only the word "no" (lowercase).
+
+        6. DO NOT include:
+        - Broad geographical entities not directly affected (countries, states, unless the entire entity was impacted)
+        - Locations only mentioned incidentally (headquarters of responding agencies, etc.)
+        - Places mentioned for context but not directly experiencing the disaster
+        - General areas not specified with proper nouns
+
+        Examples:
+        For a wildfire article: Paradise, Camp Creek Road, Butte County, Sierra Nevada foothills, Eastland County
+        NOT: California, United States, Western US
+
+        For a hurricane article: New Orleans, French Quarter, Lake Pontchartrain, Superdome
+        NOT: Louisiana, Gulf Coast, United States (unless the entire state/region was directly impacted)
+
+        Format for response when locations are found:
+        Paradise, Camp Creek Road, Butte County, Sierra Nevada foothills
+
+        Format for response when no locations are found:
+        no
+        Article Content: {text}
+        """
     
     try:
     
-        summary = model.generate_content(f"Please, given these articles, could you pull out a list of proper noun locations in the article. responses should be string list format\n {text} \n if the article does not contain any information about the event, please return 'no'")
+        # summary = model.generate_content(f"Please, given these articles, could you pull out a list of proper noun locations in the article. responses should be string list format\n {text} \n if the article does not contain any information about the event, please return 'no'")
+        summary = model.generate_content(prompt)
     except Exception as e:
         print(e)
         sleep(10)
         try:
-            summary = model.generate_content(f"Please, given these articles, could you pull out a list of proper noun locations in the article. responses should be string list format\n {text} \n if the article does not contain any information about the event, please return 'no'")
+            # summary = model.generate_content(f"Please, given these articles, could you pull out a list of proper noun locations in the article. responses should be string list format\n {text} \n if the article does not contain any information about the event, please return 'no'")
+            summary = model.generate_content(prompt)
         except Exception as e:
             return ''
     if summary.text == 'no':
@@ -82,7 +122,32 @@ def summarize_text(text,startdate, enddate):
 
 def get_statements(text,dates):
 
-    statements = model.generate_content(f"Please, given these articles and a list of dates, can you please assign a statement to each date describing the event in the article that could be visible from. The statement should be a sentence or two that describes the event that happened on or by that date. Format should be a list with no special characters or special formatting.\n {text} \n {dates}")
+    prompt= f"""
+            Task: Create a chronological timeline of observable natural disaster events from the provided news articles.
+
+            Instructions:
+            1. Review the attached news articles for information about natural disasters (earthquakes, floods, hurricanes, wildfires, volcanic eruptions, etc.).
+            2. For each date in the provided list, identify natural disaster events that occurred on or by that date that would be seen remotely.
+            3. Write a 1-2 sentence description for each date focusing specifically on the visible physical manifestations, such as:
+            - Extent of flooding or inundation
+            - Wildfire burn scars or active fire fronts
+            - Hurricane cloud formations or aftermath flooding
+            - Visible structural damage to landscapes or urban areas
+            - Changes to coastlines, river courses, or terrain
+            - Ash clouds, lava flows, or other volcanic features
+            4. If a specific date isn't explicitly mentioned in the articles, use context clues to reasonably infer when these visible changes occurred.
+            5. Present your response as a simple chronological list with dates followed by descriptions.
+            6. Emphasize the VISUAL aspects that would be detectable from above.
+
+            Format example:
+            June 15, 2023: Extensive flooding covered approximately 60 square miles of the Mississippi Delta region, with standing water clearly visible across previously inhabited areas and farmland.
+            July 3, 2023: The Caldor wildfire in California created a distinct burn scar spanning 25 miles along the Sierra Nevada mountain range, with active fire fronts visible on the northeastern perimeter.
+            Article Content: {text}
+            Dates for analysis: {dates}
+            """
+
+    # statements = model.generate_content(f"Please, given these articles and a list of dates, can you please assign a statement to each date describing the event in the article that could be visible from. The statement should be a sentence or two that describes the event that happened on or by that date. Format should be a list with no special characters or special formatting.\n {text} \n {dates}")
+    statements = model.generate_content(prompt)
     if statements.text == 'no':
         return ''
     
@@ -90,7 +155,7 @@ def get_statements(text,dates):
 
 def get_images(center, starttime, endtime, incident_type, index):
     halfwidth=0.05
-    odir='all_events'
+    odir='viz_images'
     buffer_days = 5
 
     min_lon = center[1] - halfwidth
@@ -102,7 +167,9 @@ def get_images(center, starttime, endtime, incident_type, index):
     if not isdir(odir):
         mkdir(odir)
 
+    
     outdir = join(odir, str(index))
+
     if not isdir(outdir):
         mkdir(outdir)
 
@@ -266,7 +333,7 @@ def get_article_content(url):
     else:
         return None, None
 
-def get_image_center(list_of_locs):
+def get_image_center(list_of_locs, fema_center):
     # find center for square of 0.1 degrees maximizing the number of locations within the square
     lats = []
     lons = []
@@ -289,6 +356,10 @@ def get_image_center(list_of_locs):
          # Find optimal square center
         if not lats or not lons:
             return None, None
+        
+        # add fema center to list of locations
+        lats.append(fema_center[0])
+        lons.append(fema_center[1])
             
         # Create grid of potential centers
         lat_min, lat_max = min(lats), max(lats)
@@ -303,9 +374,16 @@ def get_image_center(list_of_locs):
                 count = sum(1 for loc_lat, loc_lon in zip(lats, lons)
                           if abs(loc_lat - lat) <= 0.05 and abs(loc_lon - lon) <= 0.05)
                 
-                if count > best_count:
+                # ensure that fema center is within the square
+                fema_in_square = (lat - 0.05 <= fema_center[0] <= lat + 0.05) and (lon - 0.05 <= fema_center[1] <= lon + 0.05)
+                
+                if count > best_count and fema_in_square:
                     best_count = count
                     best_center = (lat, lon)
+
+        # # only keep locations that are within 0.05 degrees of the center
+        # locations = {loc: (lat, lon) for loc, (lat, lon) in locations.items()
+        #              if abs(lat - best_center[0]) <= 0.05 and abs(lon - best_center[1]) <= 0.05}
                     
         return best_center, locations
         
@@ -315,11 +393,13 @@ def get_image_center(list_of_locs):
 
 def main():
     # read the csv file
-    csv = open("articles.csv", "r").readlines()
-    f = open('parsed_image_text.csv', 'a+')  # Open the CSV file in append mode
+    csv = open("small_articles.csv", "r").readlines()
+    f = open('new_viz.csv', 'a+')  # Open the CSV file in append mode
     df = pd.read_csv('FEMA_filtered_processed.csv', header=0)
    
 
+    
+    
     # create a dict of all the events in articles, with the index as the key and the links as the values list
     events = {}
     for line in csv:
@@ -327,8 +407,13 @@ def main():
         if index not in events:
             events[index] = []
         events[index].append(line.split(",")[1])
+    
+    skip_indices = os.listdir('viz_images')
+    skip_indices = [int(i) for i in skip_indices if i.isdigit()]
+    events = {k: v for k, v in events.items() if k not in skip_indices}
 
     for event_index, links in events.items():
+        print(f"Processing event {event_index} with {len(links)} links")
         # get the dates from df using the index
         try:
             start_date = df.loc[df['index'] == event_index, 'incidentBeginDate'].values[0]
@@ -346,6 +431,10 @@ def main():
         # get the article content for all links
         content = ''
         for link in links:
+            for black in black_list:
+                if black in link:
+                    print(f"Skipping link {link} due to black list")
+                    continue
             title, article_content = get_article_content(link)
             if article_content:
                 content += article_content + '\n'
@@ -378,18 +467,17 @@ def main():
         # remove duplicates
         list_of_locs = list(set(list_of_locs))
 
-        if len(list_of_locs) == 0:
-            print("No locations found, skipping...")
-            continue
-        center, locations = get_image_center(list_of_locs)
+       
+        fema_lat = df.loc[df['index'] == event_index, 'lat'].values[0]
+        fema_lon = df.loc[df['index'] == event_index, 'lon'].values[0]
+        fema_center = (fema_lat, fema_lon)
 
-        if len(list_of_locs) == 0 or center is None:
-            print("No center found, using fema location")
-            fema_lat = df.loc[df['index'] == event_index, 'lat'].values[0]
-            fema_lon = df.loc[df['index'] == event_index, 'lon'].values[0]
-            center = (fema_lat, fema_lon)
+        if len(list_of_locs) == 0:
+            print("No locations found in article")
             locations = {f"FEMA location {event_index}": (fema_lat, fema_lon)}
             print("FEMA location", center)
+
+        center, locations = get_image_center(list_of_locs, fema_center)
 
         print("get_images")
 

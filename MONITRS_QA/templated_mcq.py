@@ -54,7 +54,7 @@ class MultipleChoiceGenerator:
             },
             "location_identification": {
                 "templates": [
-                    "Where is {location}?",
+                    "Where is {location}? In pixel coordinates.",
                 ]
             },
             "event_sequence": {
@@ -394,13 +394,14 @@ class MultipleChoiceGenerator:
 
         # correct pixel coordinates
         correct_pixel_coords = geo_to_pixel({chosen_location: chosen_location_coords}, event_data['base_coordinates'])
-        
+        correct_pixel_coords = correct_pixel_coords[chosen_location]
+
         # Select template
         template = random.choice(self.mc_templates["location_identification"]["templates"])
         
         # Generate question
         question = template.format(
-            location=chosen_location
+            location=question_location
         )
         
         # generate random pixel coordinates for other optionn
@@ -686,7 +687,7 @@ if __name__ == "__main__":
     dataset = generator.process_file(lines, image_paths, event_types)
     
     # Save the dataset
-    with open('train_multiple_choice.json', 'w') as f:
+    with open('new_train_multiple_choice.json', 'w') as f:
         json.dump(dataset, f, indent=2)
     
     lines = test_lines
@@ -703,5 +704,5 @@ if __name__ == "__main__":
     # Process the file (limit to first 10 lines for testing)
     dataset = generator.process_file(lines, image_paths, event_types)
     # Save the dataset
-    with open('test_multiple_choice.json', 'w') as f:
+    with open('new_test_multiple_choice.json', 'w') as f:
         json.dump(dataset, f, indent=2)

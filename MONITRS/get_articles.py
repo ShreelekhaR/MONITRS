@@ -29,7 +29,7 @@ def main():
 
     f = open('articles.csv', 'a+')  # Open the CSV file in append mode
 
-    for i,search_query in tqdm(enumerate(queries[9997:])):
+    for i,search_query in tqdm(enumerate(queries)):
         # print(f"---------------------Query {i+1}/{len(queries)}: {search_query[1]}")
        
         links = get_article(search_query[1])
