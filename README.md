@@ -48,20 +48,15 @@ python MONITRS/consolidate_captions.py
 python MONITRS_QA/templated_mcq.py
 ```
 
-## 3.2 Create the templated open ended questions
-```bash
-python MONITRS_QA/templated_q_a.py
-```
-
-## 3.3 Create the generated multiple choice questions
+## 3.2 Create the generated multiple choice questions
 ```bash
 python MONITRS_QA/generated_mcq.py
 ```
-## 3.4 Create the generated open ended questions
+## 3.3 Create the generated open ended questions
 ```bash
 python MONITRS_QA/generated_q_a.py
 ```
-## 3.5 Merge the (available) training and test sets
+## 3.4 Merge the (available) training and test sets
 
 Merges all train and test sets into a single train and test set for MONITRS-QA. 
 

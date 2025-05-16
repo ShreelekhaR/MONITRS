@@ -8,8 +8,8 @@ tiny = False
 # for tiny uncomment the following line
 # tiny = True
 
-train_jsons = [ "train_templated_q_a.json", "train_multiple_choice.json", "train_generated_q_a.json", "train_generated_multiple_choice_q_a.json"]
-test_jsons = ["test_templated_q_a.json", "test_multiple_choice.json", "test_generated_q_a.json", "test_generated_multiple_choice_q_a.json"]
+train_jsons = [ "train_multiple_choice.json", "train_generated_q_a.json", "train_generated_multiple_choice_q_a.json"]
+test_jsons = [ "test_multiple_choice.json", "test_generated_q_a.json", "test_generated_multiple_choice_q_a.json"]
 
 # merge available jsons for train and test respectively
 
