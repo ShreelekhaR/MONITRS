@@ -11,7 +11,7 @@ cd MONITRS
 ```bash
 conda create -n monitrs python=3.9 
 conda activate monitrs
-pip install -r requirements.txt # coming soon
+pip install -r requirements.txt 
 ```
 
 # 2. MONITRS Creation
