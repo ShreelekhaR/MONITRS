@@ -1,54 +1,45 @@
 """
-MONITRS v2 — Production pipeline
-Processes FEMA disaster events: scrapes articles, extracts locations and captions,
-determines image center (FIRMS for fires, LLM for everything else),
-and outputs data for image download + QA generation.
+MONITRS v2 — Language pipeline (runs on laptop)
+Processes all FEMA events: scrapes articles, extracts locations,
+determines image centers, generates captions. NO image download.
 
-Strategy (validated on 30 events):
-  - Fire events: FIRMS hotspot center if available, else LLM estimate
-  - All other events: LLM coordinate estimate, FEMA fallback
+Outputs Data/events_processed.json — feed this to the Workbench
+for image download + QA generation.
 
 Usage:
     export GCP_PROJECT_ID=your-project-id
-    export EE_PROJECT_ID=your-ee-project-id  # optional, defaults to GCP_PROJECT_ID
     export FIRMS_MAP_KEY=your-firms-key
-    python MONITRS/get_article_aggregate_locations.py
+    python MONITRS/run_language_pipeline.py
+
+    # Process specific batch:
+    python MONITRS/run_language_pipeline.py --start 0 --end 1000
 """
 
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-from tqdm import tqdm
 import os
 import sys
 import datetime
 import json
-from os.path import join, isfile, isdir
-from os import mkdir, makedirs
+import argparse
 import numpy as np
-import urllib.request
 from dateutil.relativedelta import relativedelta
-import ee
 from google import genai
-from PIL import Image
-from time import sleep, time as now
+from time import sleep
 
 # --- Config ---
 PROJECT_ID = os.environ.get('GCP_PROJECT_ID', 'your-project-id')
-EE_PROJECT_ID = os.environ.get('EE_PROJECT_ID', PROJECT_ID)
 LOCATION = os.environ.get('GCP_LOCATION', 'us-central1')
 FIRMS_MAP_KEY = os.environ.get('FIRMS_MAP_KEY', '')
 
 client = genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
 MODEL = "gemini-2.5-flash-lite"
 
-ee.Initialize(project=EE_PROJECT_ID)
-
 BLACK_LIST = ['google', 'wikipedia', 'youtube', 'twitter', 'facebook', 'instagram',
               'linkedin', 'pinterest', 'reddit', 'quora', 'tiktok', 'tumblr']
 
-ODIR = 'Data/images'
-RESULTS_FILE = 'Data/pipeline_results.json'
+OUTPUT_FILE = 'Data/events_processed.json'
 
 
 def log(msg):
@@ -97,7 +88,7 @@ def llm_call(prompt, retries=2):
             if attempt < retries:
                 sleep(5 * (attempt + 1))
             else:
-                log(f"LLM call failed after {retries + 1} attempts: {e}")
+                log(f"LLM failed after {retries + 1} attempts: {e}")
                 return None
 
 
@@ -141,18 +132,16 @@ def estimate_damage_center(text, event_type, state, county, fema_center):
     prompt = f"""
     Task: Estimate the geographic center and extent of the damage area for this {event_type} event.
 
-    You are given news articles about a {event_type} in {county}, {state}.
-    The FEMA-reported center is approximately ({fema_center[0]:.4f}, {fema_center[1]:.4f}).
+    News articles about a {event_type} in {county}, {state}.
+    FEMA-reported center: ({fema_center[0]:.4f}, {fema_center[1]:.4f}).
 
-    Based on the articles, estimate:
-    1. The latitude and longitude of the CENTER of the actual damage/impact area
-    2. The approximate RADIUS in kilometers of the affected area
-    3. Key landmarks or features at the center of damage
-
-    Use your geographic knowledge to pinpoint where the damage was concentrated.
+    Estimate:
+    1. Latitude and longitude of the CENTER of the actual damage/impact area
+    2. Approximate RADIUS in kilometers of the affected area
+    3. Key landmarks at the center of damage
 
     Return as JSON:
-    {{"lat": 40.12, "lon": -100.45, "radius_km": 15, "reasoning": "Fire centered along Republican River south of Cambridge"}}
+    {{"lat": 40.12, "lon": -100.45, "radius_km": 15, "reasoning": "Fire centered along Republican River"}}
 
     Article Content: {text}
     """
@@ -174,12 +163,12 @@ def generate_captions(text, dates, event_type, county, state):
     Each caption should:
     1. State specific facts from the articles — cite numbers (acres, homes, %) when available
     2. Describe the VISUAL change from the previous image
-    3. Build a progressive narrative: pre-event baseline → onset → peak → aftermath
+    3. Build a progressive narrative: pre-event → onset → peak → aftermath
     4. Be 1-2 sentences, factual and concrete
 
     RULES:
     - Use present tense ("burn scar covers", not "would show")
-    - Never say "satellite imagery would depict" or "would likely show"
+    - Never say "satellite imagery would depict"
     - Pull specific details from the articles
     - If a date is before the event started, describe the baseline landscape
 
@@ -247,100 +236,12 @@ def get_firms_hotspots(fema_center, start_date, end_date):
         if key not in seen:
             seen.add(key)
             unique.append(h)
-
-    log(f"FIRMS: {len(unique)} hotspots")
     return unique
 
 
-def firms_center(hotspots):
-    h_lats = [h['lat'] for h in hotspots]
-    h_lons = [h['lon'] for h in hotspots]
-    return (np.mean(h_lats), np.mean(h_lons))
+# --- Process one event ---
 
-
-# --- Image download ---
-
-def download_images(center, start_date, end_date, event_idx,
-                    halfwidth=0.05, pre_days=14, post_days=14, max_cloud_pct=30):
-    region = ee.Geometry.Rectangle([
-        [center[1] - halfwidth, center[0] - halfwidth],
-        [center[1] + halfwidth, center[0] + halfwidth],
-    ])
-
-    event_start = datetime.datetime.strptime(start_date, '%Y-%m-%d')
-    end_clean = end_date[:10] if len(end_date) > 10 else end_date
-    event_end = datetime.datetime.strptime(end_clean, '%Y-%m-%d')
-
-    pre_start = (event_start - relativedelta(days=pre_days)).strftime('%Y-%m-%d')
-    post_end = (event_end + relativedelta(days=post_days)).strftime('%Y-%m-%d')
-
-    base_col = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED').filterBounds(region)
-
-    phases = {
-        'pre': (pre_start, start_date),
-        'during': (start_date, end_clean),
-        'post': (end_clean, post_end),
-    }
-
-    makedirs(join(ODIR, str(event_idx)), exist_ok=True)
-    outdir = join(ODIR, str(event_idx))
-    all_dates = {}
-
-    for phase, (d_start, d_end) in phases.items():
-        col = base_col.filterDate(d_start, d_end).filter(
-            ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', max_cloud_pct))
-        num = col.size().getInfo()
-
-        if num == 0:
-            all_dates[phase] = []
-            continue
-
-        img_list = col.sort('system:time_start').toList(num)
-        seen_dates = set()
-        phase_dates = []
-
-        for i in range(num):
-            img_date = ee.Image(img_list.get(i)).date().format('YYYY-MM-dd').getInfo()
-            if img_date in seen_dates:
-                continue
-            seen_dates.add(img_date)
-
-            output_file = join(outdir, f'{event_idx}_{phase}_{img_date}.png')
-            if isfile(output_file):
-                phase_dates.append(img_date)
-                continue
-
-            day_end = (datetime.datetime.strptime(img_date, '%Y-%m-%d') + relativedelta(days=1)).strftime('%Y-%m-%d')
-            mosaic = col.filterDate(img_date, day_end).mosaic()
-
-            try:
-                url = mosaic.getThumbURL({
-                    'bands': ['B4', 'B3', 'B2'],
-                    'min': 0, 'max': 3000, 'gamma': 1,
-                    'dimensions': '512x512',
-                    'region': region,
-                })
-                urllib.request.urlretrieve(url, output_file)
-                img_array = np.array(Image.open(output_file))
-                mean_val = np.mean(img_array)
-                black_pct = np.count_nonzero(img_array.sum(axis=2) == 0) / (img_array.shape[0] * img_array.shape[1])
-                white_pct = np.count_nonzero(img_array.min(axis=2) > 240) / (img_array.shape[0] * img_array.shape[1])
-                if mean_val < 25 or mean_val > 240 or black_pct > 0.05 or white_pct > 0.5:
-                    os.remove(output_file)
-                    continue
-                phase_dates.append(img_date)
-            except Exception:
-                continue
-
-        all_dates[phase] = phase_dates
-        log(f"{phase}: {len(phase_dates)} images")
-
-    return all_dates
-
-
-# --- Main pipeline ---
-
-def process_event(event_idx, links, df, results, results_file):
+def process_event(event_idx, links, df):
     row = df[df['index'] == event_idx].iloc[0]
     fema_lat, fema_lon = row['lat'], row['lon']
     fema_center = (fema_lat, fema_lon)
@@ -353,57 +254,54 @@ def process_event(event_idx, links, df, results, results_file):
     if len(end_date) > 10:
         end_date = end_date[:10]
 
-    print(f"\n{'='*70}")
+    print(f"\n{'='*60}")
     print(f"EVENT {event_idx}: {row['declarationTitle']}")
-    print(f"  Type: {event_type} | {state} | {county} | {start_date} to {end_date}")
+    print(f"  {event_type} | {state} | {county} | {start_date} to {end_date}")
 
-    # 1. Scrape articles
+    # 1. Scrape
     log("Scraping articles")
     content, scraped = scrape_articles(links)
     log(f"Scraped {scraped}/{len(links)} articles, {len(content)} chars")
 
     if not content:
-        results[str(event_idx)] = {'error': 'no_content', 'event': row['declarationTitle']}
-        return
+        return {'error': 'no_content', 'event': row['declarationTitle']}
 
-    # 2. Extract location-event pairs
+    # 2. Extract location-events
     log("Extracting location-event pairs")
     loc_events = extract_location_events(content, start_date, end_date, state, county)
-    visual_events = [le for le in loc_events if le.get('type') == 'visual']
-    contextual_events = [le for le in loc_events if le.get('type') != 'visual']
-    log(f"{len(visual_events)} visual + {len(contextual_events)} contextual events")
+    visual = [le for le in loc_events if le.get('type') == 'visual']
+    contextual = [le for le in loc_events if le.get('type') != 'visual']
+    log(f"{len(visual)} visual + {len(contextual)} contextual")
 
-    # 3. Determine image center
-    log("Determining image center")
-
-    # Strategy: FIRMS for fires, LLM for everything else, FEMA fallback
-    center = fema_center
+    # 3. Determine center
+    center = list(fema_center)
     strategy = 'fema'
     halfwidth = 0.05
-    hotspots = None
     llm_estimate = None
-    fc = None
+    firms_data = None
 
     if event_type == 'Fire' and FIRMS_MAP_KEY:
         log("Querying FIRMS")
         hotspots = get_firms_hotspots(fema_center, start_date, end_date)
         if hotspots:
-            fc = firms_center(hotspots)
-            center = fc
+            h_lats = [h['lat'] for h in hotspots]
+            h_lons = [h['lon'] for h in hotspots]
+            center = [float(np.mean(h_lats)), float(np.mean(h_lons))]
             strategy = 'firms'
+            firms_data = {'count': len(hotspots), 'center': center}
             log(f"FIRMS center: ({center[0]:.4f}, {center[1]:.4f}), {len(hotspots)} hotspots")
 
     if strategy != 'firms':
         log("LLM coordinate estimation")
         llm_estimate = estimate_damage_center(content, event_type, state, county, fema_center)
         if llm_estimate and llm_estimate.get('lat') and llm_estimate.get('lon'):
-            center = (llm_estimate['lat'], llm_estimate['lon'])
+            center = [llm_estimate['lat'], llm_estimate['lon']]
             radius = llm_estimate.get('radius_km', 10)
             halfwidth = min(max(0.05, radius / 111 / 2), 0.15)
             strategy = 'llm'
             log(f"LLM center: ({center[0]:.4f}, {center[1]:.4f}), radius ~{radius}km")
         else:
-            log(f"LLM failed, using FEMA center: ({center[0]:.4f}, {center[1]:.4f})")
+            log("LLM failed, using FEMA center")
 
     # 4. Generate captions
     log("Generating captions")
@@ -412,12 +310,9 @@ def process_event(event_idx, links, df, results, results_file):
         all_dates.append(end_date)
     captions = generate_captions(content, all_dates, event_type, county, state)
 
-    # 5. Download images
-    log(f"Downloading images ({strategy} center)")
-    image_dates = download_images(center, start_date, end_date, event_idx, halfwidth=halfwidth)
+    log(f"Done — {strategy} center")
 
-    # 6. Save results
-    results[str(event_idx)] = {
+    return {
         'event': row['declarationTitle'],
         'type': event_type,
         'state': state,
@@ -425,24 +320,24 @@ def process_event(event_idx, links, df, results, results_file):
         'start_date': start_date,
         'end_date': end_date,
         'fema_center': list(fema_center),
-        'center': list(center),
+        'center': center,
         'strategy': strategy,
         'halfwidth': halfwidth,
         'llm_estimate': llm_estimate,
-        'firms_center': list(fc) if fc else None,
-        'firms_hotspots_count': len(hotspots) if hotspots else 0,
+        'firms': firms_data,
         'location_events': loc_events,
         'captions': captions,
-        'image_dates': image_dates,
         'num_articles_scraped': scraped,
+        'article_links': links,
     }
-
-    with open(results_file, 'w') as f:
-        json.dump(results, f, indent=2, default=str)
-    log(f"Event {event_idx} done — {strategy} center, {sum(len(v) for v in image_dates.values())} images")
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--start', type=int, default=0, help='Start event index')
+    parser.add_argument('--end', type=int, default=None, help='End event index (exclusive)')
+    args = parser.parse_args()
+
     df = pd.read_csv('Data/FEMA_filtered.csv', header=0)
     articles_lines = open('Data/articles.csv', 'r').readlines()
 
@@ -455,34 +350,67 @@ def main():
             events[idx] = []
         events[idx].append(url)
 
+    # Filter to requested range
+    event_ids = sorted(events.keys())
+    if args.end:
+        event_ids = [e for e in event_ids if args.start <= e < args.end]
+    else:
+        event_ids = [e for e in event_ids if e >= args.start]
+
     # Load existing results for resume
-    if os.path.exists(RESULTS_FILE):
-        with open(RESULTS_FILE, 'r') as f:
+    if os.path.exists(OUTPUT_FILE):
+        with open(OUTPUT_FILE, 'r') as f:
             results = json.load(f)
         print(f"Resuming: {len(results)} events already done")
     else:
         results = {}
 
-    total = len(events)
-    for i, (event_idx, links) in enumerate(sorted(events.items())):
+    total = len(event_ids)
+    done = 0
+
+    for i, event_idx in enumerate(event_ids):
         if str(event_idx) in results:
+            done += 1
             continue
 
         print(f"\n[{i+1}/{total}]", end='')
 
         try:
-            process_event(event_idx, links, df, results, RESULTS_FILE)
+            result = process_event(event_idx, events[event_idx], df)
+            results[str(event_idx)] = result
         except KeyboardInterrupt:
             print("\n\nInterrupted. Progress saved.")
+            with open(OUTPUT_FILE, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
             sys.exit(0)
         except Exception as e:
             log(f"FAILED: {e}")
             results[str(event_idx)] = {'error': str(e)}
-            with open(RESULTS_FILE, 'w') as f:
+
+        # Save every 10 events
+        done += 1
+        if done % 10 == 0:
+            with open(OUTPUT_FILE, 'w') as f:
                 json.dump(results, f, indent=2, default=str)
+            log(f"Checkpoint: {done} events saved")
 
-    print(f"\n\nDone. {len(results)} events processed. Results: {RESULTS_FILE}")
+    # Final save
+    with open(OUTPUT_FILE, 'w') as f:
+        json.dump(results, f, indent=2, default=str)
+
+    # Summary
+    n_ok = sum(1 for v in results.values() if 'error' not in v)
+    n_err = sum(1 for v in results.values() if 'error' in v)
+    strategies = {}
+    for v in results.values():
+        s = v.get('strategy', 'error')
+        strategies[s] = strategies.get(s, 0) + 1
+
+    print(f"\n\n{'='*60}")
+    print(f"DONE: {n_ok} processed, {n_err} errors out of {len(results)}")
+    print(f"Strategies: {strategies}")
+    print(f"Output: {OUTPUT_FILE}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

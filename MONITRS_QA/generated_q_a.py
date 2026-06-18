@@ -6,13 +6,19 @@ import ast
 from datetime import datetime
 import os
 import re
-import google.generativeai as genai
+from google import genai
 from time import sleep
 from tqdm import tqdm
 
+PROJECT_ID = os.environ.get('GCP_PROJECT_ID', 'your-project-id')
+LOCATION = os.environ.get('GCP_LOCATION', 'us-central1')
 
-genai.configure(api_key="Your_api_key_here")
-model = genai.GenerativeModel("gemini-1.5-flash")
+client = genai.Client(
+    vertexai=True,
+    project=PROJECT_ID,
+    location=LOCATION,
+)
+MODEL = "gemini-2.5-flash-lite"
 
 
 def geo_to_pixel(locations, center, radius = 5):
@@ -164,14 +170,14 @@ def query_q_a(events) -> List[str]:
         **Answer 3:** The wildfires in Kansas, Texas, and Oklahoma occurred on December 15, 2021\
         """
     try:
-        summary = model.generate_content(prompt)
+        summary = client.models.generate_content(model=MODEL, contents=prompt)
         # make the query 
     except Exception as e:
         print(e)
         for i in range(3):
             sleep(100)
         try:
-            summary = model.generate_content(prompt)
+            summary = client.models.generate_content(model=MODEL, contents=prompt)
         except Exception as e:
             return ''
     if summary.text == 'no':

@@ -7,17 +7,18 @@ import pandas as pd
 import re
 import time
 import argparse
-import google.generativeai as genai
+from google import genai
 
-def ask_gemini(question, predicted, ground_truth, model):
+def ask_gemini(question, predicted, ground_truth, gemini_client, model_name):
     """
     Ask Gemini to be LLM-as-Judge for satellite image QA evaluation
-    
+
     Args:
         question: The original question
         predicted: The model's predicted answer
         ground_truth: The ground truth answer
-        model: The Gemini model to use
+        gemini_client: The genai.Client instance
+        model_name: The model name string
         
     Returns:
         Dictionary with scores
@@ -77,7 +78,7 @@ EVALUATION:"""
 
     # Call Gemini API
     try:
-        response = model.generate_content(prompt)
+        response = gemini_client.models.generate_content(model=model_name, contents=prompt)
         response_text = response.text
     except Exception as e:
         print(f"Error calling Gemini API: {str(e)}")
@@ -140,14 +141,20 @@ def main():
                         help="Path to the predicted answers JSON file")
     parser.add_argument("--output_dir", type=str, default="evaluation_results",
                         help="Directory to save evaluation results")
-    parser.add_argument("--api_key", type=str, default="your_api_key_here",
-                        help="Gemini API key")
-    
+    parser.add_argument("--gcp_project", type=str, default=None,
+                        help="GCP project ID (or set GCP_PROJECT_ID env var)")
+    parser.add_argument("--gcp_location", type=str, default="us-central1",
+                        help="GCP location")
+
     args = parser.parse_args()
-    
-    # Set up Gemini
-    genai.configure(api_key=args.api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+
+    project_id = args.gcp_project or os.environ.get('GCP_PROJECT_ID', 'your-project-id')
+    gcp_client = genai.Client(
+        vertexai=True,
+        project=project_id,
+        location=args.gcp_location,
+    )
+    MODEL = "gemini-2.5-flash-lite"
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -182,7 +189,7 @@ def main():
             ground_truth = qa_json[int(real_qid)]['conversations'][1]['value']
             
             # Get evaluation
-            scores = ask_gemini(question, predicted, ground_truth, model)
+            scores = ask_gemini(question, predicted, ground_truth, gcp_client, MODEL)
             
             # Add question ID to scores
             scores["qid"] = qid
