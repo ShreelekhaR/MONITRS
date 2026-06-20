@@ -586,6 +586,7 @@ def main():
     parser.add_argument('--start', type=int, default=0, help='Start event index')
     parser.add_argument('--end', type=int, default=None, help='End event index (exclusive)')
     parser.add_argument('--no-images', action='store_true', help='Skip image download (text only)')
+    parser.add_argument('--output', type=str, default=None, help='Output file (default: Data/events_processed_{start}_{end}.json)')
     args = parser.parse_args()
 
     df = pd.read_csv('Data/FEMA_filtered.csv', header=0)
@@ -599,6 +600,14 @@ def main():
         if idx not in events:
             events[idx] = []
         events[idx].append(url)
+
+    # Set output file
+    global OUTPUT_FILE
+    if args.output:
+        OUTPUT_FILE = args.output
+    else:
+        end_str = args.end if args.end else 'end'
+        OUTPUT_FILE = f'Data/events_processed_{args.start}_{end_str}.json'
 
     # Filter to requested range
     event_ids = sorted(events.keys())
