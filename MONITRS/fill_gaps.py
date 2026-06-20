@@ -39,13 +39,29 @@ MODEL = "gemini-2.5-flash-lite"
 RESULTS_FILE = 'Data/events_processed.json'
 
 
-def search_ddg(query, max_results=5):
-    try:
-        results = DDGS().text(query, max_results=max_results)
-        return [r['href'] for r in results if r.get('href')]
-    except Exception as e:
-        log(f"DDG search failed: {e}")
-        return []
+def search_ddg(event_name, event_type, county, state, start_date, max_results=5):
+    queries = [
+        f"{event_name} {county} {state} {start_date}",
+        f"{event_name} {state} {event_type}",
+        f"{event_name} disaster",
+    ]
+    all_links = []
+    seen = set()
+    for query in queries:
+        try:
+            results = DDGS().text(query, max_results=max_results)
+            for r in results:
+                href = r.get('href', '')
+                if href and href not in seen:
+                    seen.add(href)
+                    all_links.append(href)
+            if all_links:
+                break
+            sleep(1)
+        except Exception as e:
+            log(f"DDG search failed for '{query}': {e}")
+            sleep(2)
+    return all_links
 
 
 def scrape_articles(links):
@@ -86,8 +102,7 @@ def process_gap_event(event_idx, original_links, df):
     # Step 2: If still no content, search DuckDuckGo
     if len(content) < 200:
         log("Searching DuckDuckGo for articles")
-        query = f"{event_name} {event_type} {county} {state} {start_date}"
-        new_links = search_ddg(query)
+        new_links = search_ddg(event_name, event_type, county, state, start_date)
         log(f"DDG found {len(new_links)} links")
         sleep(1)
 
