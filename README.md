@@ -64,3 +64,8 @@ Please note that to create subsets of the dataset, for example MONITRS-QA-tiny, 
 ```bash
 python MONITRS_QA/merge_train_test.py
 ```
+
+# 4. Citation
+If you use MONITRS or MONITRS-QA in your research, please cite the following paper:
+
+

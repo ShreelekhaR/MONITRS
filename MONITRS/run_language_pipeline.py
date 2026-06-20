@@ -24,8 +24,13 @@ import datetime
 import json
 import argparse
 import numpy as np
+import urllib.request
+from os.path import join, isfile
+from os import makedirs
 from dateutil.relativedelta import relativedelta
+import ee
 from google import genai
+from PIL import Image
 from time import sleep
 
 # --- Config ---
@@ -33,8 +38,14 @@ PROJECT_ID = os.environ.get('GCP_PROJECT_ID', 'your-project-id')
 LOCATION = os.environ.get('GCP_LOCATION', 'us-central1')
 FIRMS_MAP_KEY = os.environ.get('FIRMS_MAP_KEY', '')
 
+EE_PROJECT_ID = os.environ.get('EE_PROJECT_ID', PROJECT_ID)
+
 client = genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
 MODEL = "gemini-2.5-flash-lite"
+
+ee.Initialize(project=EE_PROJECT_ID)
+
+ODIR = 'Data/images'
 
 BLACK_LIST = ['google', 'wikipedia', 'youtube', 'twitter', 'facebook', 'instagram',
               'linkedin', 'pinterest', 'reddit', 'quora', 'tiktok', 'tumblr']
@@ -156,9 +167,122 @@ def estimate_damage_center(text, event_type, state, county, fema_center):
         return None
 
 
-def generate_captions(text, dates, event_type, county, state):
+def estimate_damage_center_with_firms(text, event_type, state, county, fema_center, firms_center, firms_count):
+    prompt = f"""
+    Task: Given NASA FIRMS fire detection data AND news articles, estimate the precise
+    center and extent of the fire damage area.
+
+    Event: {event_type} in {county}, {state}.
+    FEMA center: ({fema_center[0]:.4f}, {fema_center[1]:.4f})
+    NASA FIRMS detected {firms_count} fire hotspots centered at ({firms_center[0]:.4f}, {firms_center[1]:.4f}).
+
+    Using BOTH the FIRMS hotspot location AND the article details (specific roads,
+    landmarks, towns affected), estimate:
+    1. The best center point for a satellite image that captures the main damage area
+    2. The radius in km
+    3. Your reasoning — how do the article details refine the FIRMS center?
+
+    The FIRMS center is the average of all hotspot detections. But the articles may
+    indicate that the worst damage, most structures destroyed, or most significant
+    visual changes were concentrated in a specific part of the burn area.
+
+    Return as JSON:
+    {{"lat": 40.12, "lon": -100.45, "radius_km": 15, "reasoning": "FIRMS shows broad burn but articles indicate worst damage near Glen Rose"}}
+
+    Article Content: {text}
+    """
+    raw = llm_call(prompt)
+    if not raw:
+        return None
+    try:
+        if raw.startswith('```'):
+            raw = raw.split('\n', 1)[1].rsplit('```', 1)[0]
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def align_events_to_images(loc_events, image_dates, event_start):
+    if not image_dates:
+        return {}
+    aligned = {d: [] for d in image_dates}
+    for le in loc_events:
+        event_date = le.get('date', '')
+        if not event_date:
+            continue
+        # Find the first image date on or after this event
+        assigned = None
+        for img_date in image_dates:
+            if img_date >= event_date:
+                assigned = img_date
+                break
+        # If no image after the event, assign to the last image
+        if assigned is None:
+            assigned = image_dates[-1]
+        aligned[assigned].append(le)
+
+    # Mark pre-event images
+    for img_date in image_dates:
+        if img_date < event_start:
+            if not aligned[img_date]:
+                aligned[img_date].append({
+                    'type': 'pre_event',
+                    'event': 'Pre-event baseline — no disaster activity yet'
+                })
+    return aligned
+
+
+def generate_aligned_captions(text, aligned, event_type, county, state, center, strategy):
+    center_info = f"Images centered at ({center[0]:.4f}, {center[1]:.4f})."
+    if strategy == 'firms':
+        center_info += " Location from NASA FIRMS fire hotspot detections."
+
+    alignment_text = ""
+    for img_date in sorted(aligned.keys()):
+        events = aligned[img_date]
+        if not events:
+            alignment_text += f"\n{img_date}: (no specific events reported by this date)"
+        else:
+            event_strs = [le.get('event', '') for le in events]
+            alignment_text += f"\n{img_date}: {'; '.join(e for e in event_strs if e)}"
+
+    prompt = f"""
+    Task: Write a factual caption for each satellite image of a {event_type} event in {county}, {state}.
+    {center_info}
+
+    These are optical (true color RGB) satellite images from Sentinel-2.
+
+    Below are image dates with the article-reported events that occurred by that date:
+    {alignment_text}
+
+    For each date, write a 1-2 sentence caption that:
+    1. Describes what PHYSICAL CHANGES may be present in the landscape by this date
+    2. Cites specific facts from articles (acres burned, structures destroyed, flood extent, %)
+    3. For pre-event dates: describe the baseline landscape
+    4. Uses present tense
+
+    IMPORTANT — these are optical/visible-light images, NOT thermal or infrared:
+    - Do NOT mention "hotspots" — those are only visible in thermal/infrared sensors
+    - DO mention: burn scars (darkened terrain), smoke plumes, flooding (standing water),
+      vegetation loss, debris fields, structural damage
+    - Subtle changes may not be obvious in a 512px image but describe the known state
+
+    Return format — one line per date:
+    YYYY-MM-DD: caption
+    """
+    return llm_call(prompt) or ''
+
+
+def generate_captions(text, dates, event_type, county, state, center, strategy):
+    center_info = f"The satellite images are centered at ({center[0]:.4f}, {center[1]:.4f})."
+    if strategy == 'firms':
+        center_info += " This location was determined from NASA FIRMS active fire hotspot detections."
+
     prompt = f"""
     Task: Write a factual caption for each satellite image date of a {event_type} event in {county}, {state}.
+
+    {center_info}
+    Only describe what would be visible at THIS specific location.
 
     Each caption should:
     1. State specific facts from the articles — cite numbers (acres, homes, %) when available
@@ -239,9 +363,90 @@ def get_firms_hotspots(fema_center, start_date, end_date):
     return unique
 
 
+# --- Image download ---
+
+def download_images(center, start_date, end_date, event_idx,
+                    halfwidth=0.05, pre_days=14, post_days=14, max_cloud_pct=30):
+    region = ee.Geometry.Rectangle([
+        [center[1] - halfwidth, center[0] - halfwidth],
+        [center[1] + halfwidth, center[0] + halfwidth],
+    ])
+    event_start = datetime.datetime.strptime(start_date, '%Y-%m-%d')
+    end_clean = end_date[:10] if len(end_date) > 10 else end_date
+    event_end = datetime.datetime.strptime(end_clean, '%Y-%m-%d')
+    pre_start = (event_start - relativedelta(days=pre_days)).strftime('%Y-%m-%d')
+    post_end = (event_end + relativedelta(days=post_days)).strftime('%Y-%m-%d')
+
+    base_col = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED').filterBounds(region)
+    phases = {
+        'pre': (pre_start, start_date),
+        'during': (start_date, end_clean),
+        'post': (end_clean, post_end),
+    }
+    outdir = join(ODIR, str(event_idx))
+    makedirs(outdir, exist_ok=True)
+    all_dates = {}
+
+    for phase, (d_start, d_end) in phases.items():
+        if d_start >= d_end:
+            all_dates[phase] = []
+            continue
+        col = base_col.filterDate(d_start, d_end).filter(
+            ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', max_cloud_pct))
+        try:
+            num = col.size().getInfo()
+        except Exception:
+            all_dates[phase] = []
+            continue
+        if num == 0:
+            all_dates[phase] = []
+            continue
+
+        img_list = col.sort('system:time_start').toList(num)
+        seen = set()
+        phase_dates = []
+        for i in range(num):
+            try:
+                img_date = ee.Image(img_list.get(i)).date().format('YYYY-MM-dd').getInfo()
+            except Exception:
+                continue
+            if img_date in seen:
+                continue
+            seen.add(img_date)
+            output_file = join(outdir, f'{event_idx}_{phase}_{img_date}.png')
+            if isfile(output_file):
+                phase_dates.append(img_date)
+                continue
+            day_end = (datetime.datetime.strptime(img_date, '%Y-%m-%d') + relativedelta(days=1)).strftime('%Y-%m-%d')
+            mosaic = col.filterDate(img_date, day_end).mosaic()
+            try:
+                url = mosaic.getThumbURL({
+                    'bands': ['B4', 'B3', 'B2'], 'min': 0, 'max': 3000,
+                    'gamma': 1, 'dimensions': '512x512', 'region': region,
+                })
+                urllib.request.urlretrieve(url, output_file)
+                img_array = np.array(Image.open(output_file))
+                mean_val = np.mean(img_array)
+                black_pct = np.count_nonzero(img_array.sum(axis=2) == 0) / (img_array.shape[0] * img_array.shape[1])
+                white_pct = np.count_nonzero(img_array.min(axis=2) > 240) / (img_array.shape[0] * img_array.shape[1])
+                if mean_val < 25 or mean_val > 240 or black_pct > 0.05 or white_pct > 0.5:
+                    os.remove(output_file)
+                    continue
+                phase_dates.append(img_date)
+            except Exception:
+                if isfile(output_file):
+                    os.remove(output_file)
+                continue
+        all_dates[phase] = phase_dates
+
+    total = sum(len(v) for v in all_dates.values())
+    log(f"  {total} images ({', '.join(f'{k}:{len(v)}' for k,v in all_dates.items())})")
+    return all_dates
+
+
 # --- Process one event ---
 
-def process_event(event_idx, links, df):
+def process_event(event_idx, links, df, args=None):
     row = df[df['index'] == event_idx].iloc[0]
     fema_lat, fema_lon = row['lat'], row['lon']
     fema_center = (fema_lat, fema_lon)
@@ -278,37 +483,78 @@ def process_event(event_idx, links, df):
     strategy = 'fema'
     halfwidth = 0.05
     llm_estimate = None
+    llm_center = None
     firms_data = None
 
+    # Always run LLM estimation
+    log("LLM coordinate estimation")
+    llm_estimate = estimate_damage_center(content, event_type, state, county, fema_center)
+    llm_center = None
+    if llm_estimate and llm_estimate.get('lat') and llm_estimate.get('lon'):
+        llm_center = [llm_estimate['lat'], llm_estimate['lon']]
+        radius = llm_estimate.get('radius_km', 10)
+        halfwidth = min(max(0.05, radius / 111 / 2), 0.15)
+        center = llm_center
+        strategy = 'llm'
+        log(f"LLM center: ({center[0]:.4f}, {center[1]:.4f}), radius ~{radius}km")
+
+    # For fires, also get FIRMS — and give FIRMS data to LLM for refined estimate
     if event_type == 'Fire' and FIRMS_MAP_KEY:
         log("Querying FIRMS")
         hotspots = get_firms_hotspots(fema_center, start_date, end_date)
         if hotspots:
             h_lats = [h['lat'] for h in hotspots]
             h_lons = [h['lon'] for h in hotspots]
-            center = [float(np.mean(h_lats)), float(np.mean(h_lons))]
+            firms_c = [float(np.mean(h_lats)), float(np.mean(h_lons))]
+            firms_data = {'count': len(hotspots), 'center': firms_c}
+            log(f"FIRMS center: ({firms_c[0]:.4f}, {firms_c[1]:.4f}), {len(hotspots)} hotspots")
+
+            # Use FIRMS as primary center
+            center = firms_c
             strategy = 'firms'
-            firms_data = {'count': len(hotspots), 'center': center}
-            log(f"FIRMS center: ({center[0]:.4f}, {center[1]:.4f}), {len(hotspots)} hotspots")
+            halfwidth = 0.05
 
-    if strategy != 'firms':
-        log("LLM coordinate estimation")
-        llm_estimate = estimate_damage_center(content, event_type, state, county, fema_center)
-        if llm_estimate and llm_estimate.get('lat') and llm_estimate.get('lon'):
-            center = [llm_estimate['lat'], llm_estimate['lon']]
-            radius = llm_estimate.get('radius_km', 10)
-            halfwidth = min(max(0.05, radius / 111 / 2), 0.15)
-            strategy = 'llm'
-            log(f"LLM center: ({center[0]:.4f}, {center[1]:.4f}), radius ~{radius}km")
-        else:
-            log("LLM failed, using FEMA center")
+    if strategy == 'fema':
+        log("All estimation failed, using FEMA center")
 
-    # 4. Generate captions
+    # 4. Download images (skip with --no-images)
+    all_image_dates = {}
+    if not getattr(args, 'no_images', False):
+        download_centers = {'fema': (list(fema_center), 0.05)}
+        if llm_center:
+            download_centers['llm'] = (llm_center, halfwidth)
+        if firms_data:
+            download_centers['firms'] = (firms_data['center'], 0.05)
+
+        for strat_name, (strat_center, strat_hw) in download_centers.items():
+            log(f"Downloading images: {strat_name} center ({strat_center[0]:.4f}, {strat_center[1]:.4f})")
+            try:
+                dates = download_images(strat_center, start_date, end_date,
+                                        f"{event_idx}_{strat_name}", halfwidth=strat_hw)
+                all_image_dates[strat_name] = dates
+            except Exception as e:
+                log(f"Download failed for {strat_name}: {e}")
+                all_image_dates[strat_name] = {'pre': [], 'during': [], 'post': []}
+    else:
+        log("Skipping image download (--no-images)")
+
+    # 5. Generate captions aligned to actual image dates
     log("Generating captions")
-    all_dates = pd.date_range(start_date, end_date, freq='5D').strftime('%Y-%m-%d').tolist()
-    if end_date not in all_dates:
-        all_dates.append(end_date)
-    captions = generate_captions(content, all_dates, event_type, county, state)
+    # Collect all unique image dates across strategies (pre + during + post)
+    all_img_dates = set()
+    for strat_dates in all_image_dates.values():
+        if isinstance(strat_dates, dict):
+            for phase_dates in strat_dates.values():
+                for d in phase_dates:
+                    all_img_dates.add(d)
+    all_img_dates = sorted(all_img_dates)
+
+    # Assign article events to image dates
+    aligned = align_events_to_images(loc_events, all_img_dates, start_date)
+
+    # Generate captions with the alignment context
+    captions = generate_aligned_captions(
+        content, aligned, event_type, county, state, center, strategy)
 
     log(f"Done — {strategy} center")
 
@@ -323,12 +569,15 @@ def process_event(event_idx, links, df):
         'center': center,
         'strategy': strategy,
         'halfwidth': halfwidth,
+        'llm_center': llm_center,
         'llm_estimate': llm_estimate,
         'firms': firms_data,
         'location_events': loc_events,
         'captions': captions,
+        'event_image_alignment': {k: v for k, v in aligned.items()},
         'num_articles_scraped': scraped,
         'article_links': links,
+        'image_dates': all_image_dates,
     }
 
 
@@ -336,6 +585,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--start', type=int, default=0, help='Start event index')
     parser.add_argument('--end', type=int, default=None, help='End event index (exclusive)')
+    parser.add_argument('--no-images', action='store_true', help='Skip image download (text only)')
     args = parser.parse_args()
 
     df = pd.read_csv('Data/FEMA_filtered.csv', header=0)
@@ -376,7 +626,7 @@ def main():
         print(f"\n[{i+1}/{total}]", end='')
 
         try:
-            result = process_event(event_idx, events[event_idx], df)
+            result = process_event(event_idx, events[event_idx], df, args)
             results[str(event_idx)] = result
         except KeyboardInterrupt:
             print("\n\nInterrupted. Progress saved.")

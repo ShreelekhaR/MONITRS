@@ -24,10 +24,10 @@ client = genai.Client(
     project=PROJECT_ID,
     location=LOCATION,
 )
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-2.5-pro"
 
 ODIR = 'Data/images'
-RESULTS_FILE = 'Data/test_pipeline_results.json'
+RESULTS_FILE = 'Data/events_processed.json'
 
 
 def log(msg):
@@ -93,34 +93,48 @@ def verify_event(event_idx, event_data, strategy='llm'):
 
     # Build image sequence with dates for Gemini
     parts = []
-    parts.append(f"""You are evaluating the alignment between satellite imagery and text captions
-for a {event_data['type']} event: {event_data['event']} in {event_data.get('county', '')}, {event_data.get('state', '')}.
+    parts.append(f"""You are verifying whether satellite images actually capture a natural disaster event.
+Event: {event_data['type']} — {event_data['event']} in {event_data.get('county', '')}, {event_data.get('state', '')}.
 
-Below are satellite images with their dates, followed by the generated captions.
-For each image-caption pair, evaluate:
+These are Sentinel-2 optical (RGB) images at 512x512 pixels (~11km coverage).
+Each image has a caption describing what should be visible based on news reports.
 
-1. VISUAL ACCURACY (1-5): Does the caption correctly describe what's visible in the image?
-2. TEMPORAL COHERENCE (1-5): Does the caption match what should be happening at this date in the event timeline?
-3. SPECIFICITY (1-5): Does the caption cite specific, verifiable details (acreage, road names, landmarks)?
-4. GROUNDING (1-5): Are the described visual features (burn scars, flooding, damage) actually visible in the image?
+Your job: Verify that these are GOOD training samples for a vision-language model.
 
-Also provide:
-- OVERALL_SCORE (1-5): Overall caption-image alignment
-- BEST_CAPTION: Which date has the best-aligned caption?
-- WORST_CAPTION: Which date has the worst-aligned caption?
-- ISSUES: List any specific problems (e.g. "caption mentions burn scar but image shows green vegetation")
+Check:
+1. Is the IMAGE at the right LOCATION? (terrain type, geographic features, urban/rural)
+2. Are the CAPTIONS factually accurate? (do the numbers, dates, and details match?)
+3. Does the TIMELINE progress logically? (pre-event → onset → peak → aftermath)
+4. Any VISUAL EVIDENCE of the disaster? (burn scars, flooding, smoke — bonus but not required)
+
+Score each image-caption pair:
+1. LOCATION_CORRECT (1-5): Does terrain match the expected area?
+   1 = clearly wrong (ocean for inland fire), 5 = terrain matches perfectly
+2. CAPTION_ACCURACY (1-5): Are facts plausible and internally consistent?
+3. TIMELINE (1-5): Does progression across dates make sense?
+4. VISUAL_EVIDENCE (1-5): Any visible disaster evidence?
+   1 = none visible, 3 = subtle/ambiguous, 5 = obvious. Score of 1-2 is FINE
+   if location and caption are correct — the model will learn to see what you can't.
+
+Also:
+- OVERALL_SCORE (1-5): Is this a good training sample? (location correct + caption accurate = good)
+- BEST_IMAGE: which date
+- WORST_IMAGE: which date
+- EVIDENCE_FOUND: any visual features you notice (even subtle ones)
+- ISSUES: ONLY flag real problems (wrong location, factual errors, broken timeline)
 
 Return as JSON:
 {{
   "per_date": {{
-    "YYYY-MM-DD": {{"visual_accuracy": N, "temporal_coherence": N, "specificity": N, "grounding": N, "notes": "..."}},
+    "YYYY-MM-DD": {{"visual_evidence": N, "caption_accuracy": N, "timeline": N, "location_correct": N, "notes": "..."}},
     ...
   }},
   "overall_score": N,
-  "best_caption": "YYYY-MM-DD",
-  "worst_caption": "YYYY-MM-DD",
+  "best_image": "YYYY-MM-DD",
+  "worst_image": "YYYY-MM-DD",
+  "evidence_found": ["...", "..."],
   "issues": ["...", "..."],
-  "summary": "1-2 sentence overall assessment"
+  "summary": "1-2 sentence assessment: does this image set capture the disaster?"
 }}
 
 Here are the images and captions:
@@ -134,7 +148,18 @@ Here are the images and captions:
     for key in event_keys:
         path = images[key]
         date = re.search(r'(\d{4}-\d{2}-\d{2})', key).group(1)
-        caption = date_captions.get(date, '(no caption for this date)')
+        caption = date_captions.get(date, '')
+        # Also try without exact match — find closest caption date
+        if not caption and date_captions:
+            closest = min(date_captions.keys(), key=lambda d: abs(
+                datetime.datetime.strptime(d, '%Y-%m-%d') -
+                datetime.datetime.strptime(date, '%Y-%m-%d')).days)
+            days_off = abs((datetime.datetime.strptime(closest, '%Y-%m-%d') -
+                           datetime.datetime.strptime(date, '%Y-%m-%d')).days)
+            if days_off <= 5:
+                caption = f"[nearest caption, {days_off}d off] {date_captions[closest]}"
+            else:
+                caption = '(no caption for this date)'
 
         parts.append(f"\n--- Image: {date} ---")
         parts.append(f"Caption: {caption}")
@@ -167,7 +192,7 @@ def main():
         results = json.load(f)
 
     verify_results = {}
-    strategies = ['fema', 'llm', 'bbox', 'firms']
+    strategies = ['firms']
 
     for event_idx, event_data in sorted(results.items(), key=lambda x: int(x[0])):
         if 'error' in event_data:
@@ -215,28 +240,28 @@ def main():
     print(f"\n\n{'='*70}")
     print("VERIFICATION SUMMARY")
     print(f"{'='*70}")
-    print(f"{'Event':<8} {'Type':<15} {'Best':<6} | {'FEMA':>6} {'BBox':>6} {'LLM':>6} {'FIRMS':>6} | {'dNBR':>8} {'dNDVI':>8} {'dNDWI':>8}")
-    print(f"{'-'*90}")
+    print(f"{'Event':<8} {'Event Name':<30} {'FEMA':>6} {'LLM':>6} {'FIRMS':>6} {'LLM+F':>6} {'Best Evidence'}")
+    print(f"{'-'*95}")
     for event_idx, scores in sorted(verify_results.items(), key=lambda x: int(x[0])):
         event_data = results[event_idx]
         fema_s = scores.get('fema', {}).get('overall_score', '-')
-        bbox_s = scores.get('bbox', {}).get('overall_score', '-')
         llm_s = scores.get('llm', {}).get('overall_score', '-')
         firms_s = scores.get('firms', {}).get('overall_score', '-')
-        best = event_data.get('best_strategy', '?')
+        llm_firms_s = scores.get('llm_firms', {}).get('overall_score', '-')
 
-        # Change detection for best strategy
-        cd = event_data.get('change_detection', {}).get(best, {})
-        dnbr = cd.get('NBR', {}).get('mean_change', None)
-        dndvi = cd.get('NDVI', {}).get('mean_change', None)
-        dndwi = cd.get('NDWI', {}).get('mean_change', None)
-        dnbr_s = f"{dnbr:.4f}" if dnbr is not None else '-'
-        dndvi_s = f"{dndvi:.4f}" if dndvi is not None else '-'
-        dndwi_s = f"{dndwi:.4f}" if dndwi is not None else '-'
+        # Find which strategy had the best visual evidence
+        best_evidence = ''
+        best_score = 0
+        for strat in ['fema', 'llm', 'firms', 'llm_firms']:
+            s = scores.get(strat, {})
+            sc = s.get('overall_score', 0)
+            if isinstance(sc, (int, float)) and sc > best_score:
+                best_score = sc
+                evidence = s.get('evidence_found', [])
+                best_evidence = evidence[0][:40] if evidence else ''
 
-        print(f"{event_idx:<8} {event_data['type']:<15} {best:<6} | "
-              f"{str(fema_s):>6} {str(bbox_s):>6} {str(llm_s):>6} {str(firms_s):>6} | "
-              f"{dnbr_s:>8} {dndvi_s:>8} {dndwi_s:>8}")
+        print(f"{event_idx:<8} {event_data.get('event', '?')[:30]:<30} "
+              f"{str(fema_s):>6} {str(llm_s):>6} {str(firms_s):>6} {str(llm_firms_s):>6} {best_evidence}")
 
     # Averages per strategy
     print(f"\n{'='*70}")
