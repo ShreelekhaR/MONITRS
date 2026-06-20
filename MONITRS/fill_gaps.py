@@ -41,7 +41,7 @@ RESULTS_FILE = 'Data/events_processed.json'
 
 def search_ddg(event_name, event_type, county, state, start_date, max_results=5):
     queries = [
-        f"{event_name} {county} {state} {start_date}",
+        f"{event_name} {event_type} {county} {state} {start_date}",
         f"{event_name} {state} {event_type}",
         f"{event_name} disaster",
     ]
