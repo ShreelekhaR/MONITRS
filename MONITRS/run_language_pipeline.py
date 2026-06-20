@@ -28,6 +28,7 @@ import urllib.request
 from os.path import join, isfile
 from os import makedirs
 from dateutil.relativedelta import relativedelta
+from duckduckgo_search import DDGS
 import ee
 from google import genai
 from PIL import Image
@@ -82,10 +83,34 @@ def scrape_articles(links):
         if any(b in link for b in BLACK_LIST):
             continue
         title, article_content = get_article_content(link)
-        if article_content:
+        if article_content and len(article_content) > 100:
             content += article_content + '\n'
             scraped += 1
     return content, scraped
+
+
+def search_ddg(event_name, event_type, county, state, start_date, max_results=5):
+    queries = [
+        f"{event_name} {event_type} {county} {state} {start_date}",
+        f"{event_name} {state} {event_type}",
+        f"{event_name} disaster",
+    ]
+    all_links = []
+    seen = set()
+    for query in queries:
+        try:
+            results = DDGS().text(query, max_results=max_results)
+            for r in results:
+                href = r.get('href', '')
+                if href and href not in seen:
+                    seen.add(href)
+                    all_links.append(href)
+            if all_links:
+                break
+            sleep(1)
+        except Exception:
+            sleep(2)
+    return all_links
 
 
 # --- LLM calls ---
@@ -463,13 +488,26 @@ def process_event(event_idx, links, df, args=None):
     print(f"EVENT {event_idx}: {row['declarationTitle']}")
     print(f"  {event_type} | {state} | {county} | {start_date} to {end_date}")
 
-    # 1. Scrape
+    # 1. Scrape articles, fallback to DuckDuckGo
     log("Scraping articles")
     content, scraped = scrape_articles(links)
     log(f"Scraped {scraped}/{len(links)} articles, {len(content)} chars")
 
-    if not content:
-        return {'error': 'no_content', 'event': row['declarationTitle']}
+    if len(content) < 200:
+        log("Insufficient content — searching DuckDuckGo")
+        ddg_links = search_ddg(event_name, event_type, county, state, start_date)
+        log(f"DDG found {len(ddg_links)} links")
+        for link in ddg_links:
+            if any(b in link for b in BLACK_LIST):
+                continue
+            title, article_content = get_article_content(link)
+            if article_content and len(article_content) > 100:
+                content += article_content + '\n'
+                scraped += 1
+        log(f"After DDG: {scraped} articles, {len(content)} chars")
+
+    if len(content) < 100:
+        return {'error': 'no_content', 'event': event_name}
 
     # 2. Extract location-events
     log("Extracting location-event pairs")
