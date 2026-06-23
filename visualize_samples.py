@@ -159,11 +159,10 @@ def create_sample_viz(event_idx, event_data, max_frames=999):
 
     caption_lines = []
     caption_lines.append("Constructed captions via our pipeline:")
-    for i, (img_info, caption) in enumerate(zip(selected, img_captions)):
-        if caption:
-            date = img_info['date']
-            wrapped = textwrap.fill(caption, width=120)
-            caption_lines.append(f"{date}: {wrapped}")
+    # Show ALL captions from the event, not just matched ones
+    for date in sorted(captions.keys()):
+        wrapped = textwrap.fill(captions[date], width=120)
+        caption_lines.append(f"{date}: {wrapped}")
 
     full_text = '\n'.join(caption_lines)
     ax_text.text(0.02, 0.95, full_text, transform=ax_text.transAxes,
