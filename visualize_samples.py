@@ -120,8 +120,13 @@ def create_sample_viz(event_idx, event_data, max_frames=999):
     # Top row: images with date labels
     for i, img_info in enumerate(selected):
         ax = fig.add_subplot(gs[0, i])
-        img = mpimg.imread(img_info['path'])
-        ax.imshow(img)
+        try:
+            img = mpimg.imread(img_info['path'])
+            ax.imshow(img)
+        except Exception:
+            ax.text(0.5, 0.5, 'corrupt', ha='center', va='center',
+                    transform=ax.transAxes, color='red')
+            continue
         ax.set_xticks([])
         ax.set_yticks([])
 

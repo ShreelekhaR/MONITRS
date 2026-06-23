@@ -113,7 +113,10 @@ def download_event_images(event_idx, event_data, pre_days=14, post_days=14, max_
                     'region': region,
                 })
                 urllib.request.urlretrieve(url, output_file)
-                img_array = np.array(Image.open(output_file))
+                img = Image.open(output_file)
+                if img.format != 'PNG':
+                    img.save(output_file, 'PNG')
+                img_array = np.array(img)
                 mean_val = np.mean(img_array)
                 black_pct = np.count_nonzero(img_array.sum(axis=2) == 0) / (img_array.shape[0] * img_array.shape[1])
                 white_pct = np.count_nonzero(img_array.min(axis=2) > 240) / (img_array.shape[0] * img_array.shape[1])
