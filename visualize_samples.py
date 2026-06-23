@@ -91,29 +91,8 @@ def create_sample_viz(event_idx, event_data, max_frames=999):
 
     captions = parse_captions(event_data.get('captions', ''))
 
-    pre = [img for img in images if img['phase'] == 'pre']
-    during = [img for img in images if img['phase'] == 'during']
-    post = [img for img in images if img['phase'] == 'post']
-
-    selected = []
-    if pre:
-        selected.append(pre[-1])
-    if during:
-        step = max(1, len(during) // min(len(during), max_frames - 2))
-        selected.extend(during[::step][:max_frames - 2])
-    if post:
-        selected.append(post[0])
-
-    # Filter unreadable images
-    valid = []
-    for img_info in selected:
-        try:
-            img = mpimg.imread(img_info['path'])
-            if img is not None and img.size > 0:
-                valid.append(img_info)
-        except Exception:
-            continue
-    selected = valid
+    # Show all images, just skip corrupt files
+    selected = [img for img in images if os.path.getsize(img['path']) > 1000]
     if not selected:
         return None
 
