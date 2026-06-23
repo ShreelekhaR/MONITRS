@@ -80,6 +80,17 @@ def create_sample_viz(event_idx, event_data, max_frames=8):
     if post:
         selected.append(post[0])
 
+    # Filter out images that can't be loaded
+    valid = []
+    for img_info in selected:
+        try:
+            img = mpimg.imread(img_info['path'])
+            if img is not None and img.size > 0:
+                valid.append(img_info)
+        except Exception:
+            continue
+    selected = valid
+
     if not selected:
         return None
 
@@ -98,11 +109,8 @@ def create_sample_viz(event_idx, event_data, max_frames=8):
                  fontsize=13, fontweight='bold', y=0.98)
 
     for i, (ax, img_info) in enumerate(zip(axes, selected)):
-        try:
-            img = mpimg.imread(img_info['path'])
-            ax.imshow(img)
-        except Exception:
-            ax.text(0.5, 0.5, 'Failed to load', ha='center', va='center', transform=ax.transAxes)
+        img = mpimg.imread(img_info['path'])
+        ax.imshow(img)
 
         ax.set_xticks([])
         ax.set_yticks([])
@@ -116,6 +124,14 @@ def create_sample_viz(event_idx, event_data, max_frames=8):
                      fontsize=10, color=color, fontweight='bold', pad=6)
 
         caption = captions.get(img_info['date'], '')
+        if not caption and captions:
+            from datetime import datetime
+            img_dt = datetime.strptime(img_info['date'], '%Y-%m-%d')
+            closest = min(captions.keys(),
+                          key=lambda d: abs((datetime.strptime(d, '%Y-%m-%d') - img_dt).days))
+            days_off = abs((datetime.strptime(closest, '%Y-%m-%d') - img_dt).days)
+            if days_off <= 7:
+                caption = captions[closest]
         if caption:
             wrapped = textwrap.fill(caption, width=40)
             ax.set_xlabel(wrapped, fontsize=7, color='#444444',
