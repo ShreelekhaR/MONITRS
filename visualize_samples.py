@@ -1,6 +1,5 @@
 """
-Visualize MONITRS v2 samples: image sequences with captions overlaid.
-Creates a horizontal strip of images with captions below each frame.
+Visualize MONITRS v2 samples: image sequences with captions as matplotlib figures.
 
 Usage:
     python visualize_samples.py                    # 5 random samples
@@ -14,27 +13,18 @@ import re
 import json
 import argparse
 import random
-from os.path import join, isdir
-from PIL import Image, ImageDraw, ImageFont
 import textwrap
+from os.path import join, isdir
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import numpy as np
 
 
 ODIR = 'Data/images'
 RESULTS_FILE = 'Data/events_processed.json'
 OUT_DIR = 'Data/visualizations'
 
-
-def get_font(size=12):
-    for path in [
-        '/System/Library/Fonts/Helvetica.ttc',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-    ]:
-        try:
-            return ImageFont.truetype(path, size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
+PHASE_COLORS = {'pre': '#64B4FF', 'during': '#FF6464', 'post': '#64FF64'}
 
 
 def parse_captions(caption_text):
@@ -66,11 +56,7 @@ def get_event_images(event_idx):
             phase = 'post'
         else:
             phase = 'during'
-        images.append({
-            'path': join(img_dir, fname),
-            'date': date,
-            'phase': phase,
-        })
+        images.append({'path': join(img_dir, fname), 'date': date, 'phase': phase})
     return images
 
 
@@ -81,88 +67,69 @@ def create_sample_viz(event_idx, event_data, max_frames=8):
 
     captions = parse_captions(event_data.get('captions', ''))
 
-    # Select frames: 1 pre + up to max_frames-2 during + 1 post
     pre = [img for img in images if img['phase'] == 'pre']
     during = [img for img in images if img['phase'] == 'during']
     post = [img for img in images if img['phase'] == 'post']
 
     selected = []
     if pre:
-        selected.append(pre[-1])  # last pre-event (closest to event)
+        selected.append(pre[-1])
     if during:
         step = max(1, len(during) // min(len(during), max_frames - 2))
         selected.extend(during[::step][:max_frames - 2])
     if post:
-        selected.append(post[0])  # first post-event
+        selected.append(post[0])
 
     if not selected:
         return None
 
-    # Layout
-    thumb_size = 256
-    caption_height = 80
-    padding = 5
-    n_frames = len(selected)
+    n = len(selected)
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 5.5))
+    if n == 1:
+        axes = [axes]
 
-    total_w = n_frames * (thumb_size + padding) - padding + 20
-    header_h = 60
-    total_h = header_h + thumb_size + caption_height + 20
-
-    canvas = Image.new('RGB', (total_w, total_h), (20, 20, 20))
-    draw = ImageDraw.Draw(canvas)
-    font_title = get_font(16)
-    font_caption = get_font(10)
-    font_date = get_font(12)
-
-    # Header
     event_name = event_data.get('event', '?')
     event_type = event_data.get('type', '?')
     strategy = event_data.get('strategy', '?')
     state = event_data.get('state', '')
     county = event_data.get('county', '')
-    draw.text((10, 8), f"Event {event_idx}: {event_name}", fill=(255, 255, 255), font=font_title)
-    draw.text((10, 30), f"{event_type} | {county}, {state} | Strategy: {strategy}",
-              fill=(180, 180, 180), font=font_caption)
 
-    # Frames
-    phase_colors = {'pre': (100, 180, 255), 'during': (255, 100, 100), 'post': (100, 255, 100)}
+    fig.suptitle(f"{event_name}\n{event_type}  |  {county}, {state}  |  Strategy: {strategy}",
+                 fontsize=13, fontweight='bold', y=0.98)
 
-    for i, img_info in enumerate(selected):
-        x = 10 + i * (thumb_size + padding)
-        y = header_h
-
-        # Image
+    for i, (ax, img_info) in enumerate(zip(axes, selected)):
         try:
-            img = Image.open(img_info['path']).resize((thumb_size, thumb_size))
-            canvas.paste(img, (x, y))
+            img = mpimg.imread(img_info['path'])
+            ax.imshow(img)
         except Exception:
-            continue
+            ax.text(0.5, 0.5, 'Failed to load', ha='center', va='center', transform=ax.transAxes)
 
-        # Phase indicator bar
-        color = phase_colors.get(img_info['phase'], (200, 200, 200))
-        draw.rectangle([x, y, x + thumb_size, y + 3], fill=color)
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-        # Date label
-        date_label = f"{img_info['date']} ({img_info['phase']})"
-        draw.text((x + 2, y + thumb_size + 4), date_label, fill=color, font=font_date)
+        color = PHASE_COLORS.get(img_info['phase'], '#CCCCCC')
+        for spine in ax.spines.values():
+            spine.set_edgecolor(color)
+            spine.set_linewidth(3)
 
-        # Caption
+        ax.set_title(f"{img_info['date']}  ({img_info['phase']})",
+                     fontsize=10, color=color, fontweight='bold', pad=6)
+
         caption = captions.get(img_info['date'], '')
         if caption:
-            wrapped = textwrap.fill(caption, width=35)
-            lines = wrapped.split('\n')[:3]
-            for j, line in enumerate(lines):
-                draw.text((x + 2, y + thumb_size + 20 + j * 14), line,
-                          fill=(220, 220, 220), font=font_caption)
+            wrapped = textwrap.fill(caption, width=40)
+            ax.set_xlabel(wrapped, fontsize=7, color='#444444',
+                          ha='center', labelpad=8, wrap=True)
 
-    return canvas
+    plt.tight_layout(rect=[0, 0.02, 1, 0.92])
+    return fig
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n', type=int, default=5, help='Number of samples')
-    parser.add_argument('--events', nargs='+', type=int, default=None, help='Specific event IDs')
-    parser.add_argument('--type', type=str, default=None, help='Filter by event type (Fire, Hurricane, etc)')
+    parser.add_argument('--n', type=int, default=5)
+    parser.add_argument('--events', nargs='+', type=int, default=None)
+    parser.add_argument('--type', type=str, default=None)
     args = parser.parse_args()
 
     if not os.path.exists(RESULTS_FILE):
@@ -174,7 +141,6 @@ def main():
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    # Select events
     if args.events:
         event_ids = [str(e) for e in args.events]
     else:
@@ -187,11 +153,9 @@ def main():
             img_dir = join(ODIR, str(eid))
             if isdir(img_dir) and len(os.listdir(img_dir)) >= 3:
                 candidates.append(eid)
-
         if not candidates:
             print("No events with images found")
             return
-
         event_ids = random.sample(candidates, min(args.n, len(candidates)))
 
     print(f"Visualizing {len(event_ids)} events...")
@@ -205,10 +169,12 @@ def main():
             print(f"  Event {eid}: has error, skipping")
             continue
 
-        viz = create_sample_viz(eid, data)
-        if viz:
+        fig = create_sample_viz(eid, data)
+        if fig:
             out_path = join(OUT_DIR, f'sample_{eid}.png')
-            viz.save(out_path)
+            fig.savefig(out_path, dpi=150, bbox_inches='tight',
+                        facecolor='white', edgecolor='none')
+            plt.close(fig)
             print(f"  Event {eid} ({data['event'][:30]}): saved to {out_path}")
         else:
             print(f"  Event {eid}: no images found")
