@@ -147,10 +147,13 @@ for f in ['$SPLIT_A', '$SPLIT_B']:
         print(f'  {f}: {len(data)} events')
 
 if os.path.exists('$MERGED'):
-    existing = json.load(open('$MERGED'))
-    for k, v in existing.items():
-        if k not in merged:
-            merged[k] = v
+    try:
+        existing = json.load(open('$MERGED'))
+        for k, v in existing.items():
+            if k not in merged:
+                merged[k] = v
+    except json.JSONDecodeError:
+        print(f'  {\"$MERGED\"}: corrupted, skipping (will be overwritten)')
 
 json.dump(merged, open('$MERGED', 'w'), indent=2)
 n_ok = sum(1 for v in merged.values() if 'error' not in v)
