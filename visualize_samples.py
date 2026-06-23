@@ -41,7 +41,14 @@ def parse_captions(caption_text):
 
 
 def get_event_images(event_idx):
+    # Try direct folder first, then strategy-specific folders
     img_dir = join(ODIR, str(event_idx))
+    if not isdir(img_dir):
+        for suffix in ['_firms', '_llm', '_fema', '_bbox']:
+            candidate = join(ODIR, f"{event_idx}{suffix}")
+            if isdir(candidate):
+                img_dir = candidate
+                break
     if not isdir(img_dir):
         return []
     images = []
@@ -77,7 +84,7 @@ def get_caption_for_date(img_date, captions):
     return captions[closest]
 
 
-def create_sample_viz(event_idx, event_data, max_frames=6):
+def create_sample_viz(event_idx, event_data, max_frames=999):
     images = get_event_images(event_idx)
     if not images:
         return None
