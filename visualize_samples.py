@@ -1,5 +1,5 @@
 """
-Visualize MONITRS v2 samples: image sequences with captions as matplotlib figures.
+Visualize MONITRS v2 samples: image sequences with captions below.
 
 Usage:
     python visualize_samples.py                    # 5 random samples
@@ -15,8 +15,10 @@ import argparse
 import random
 import textwrap
 from os.path import join, isdir
+from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import matplotlib.gridspec as gridspec
 import numpy as np
 
 
@@ -60,7 +62,22 @@ def get_event_images(event_idx):
     return images
 
 
-def create_sample_viz(event_idx, event_data, max_frames=8):
+def get_caption_for_date(img_date, captions):
+    if img_date in captions:
+        return captions[img_date]
+    if not captions:
+        return ''
+    img_dt = datetime.strptime(img_date, '%Y-%m-%d')
+    earlier = {d: c for d, c in captions.items()
+               if datetime.strptime(d, '%Y-%m-%d') <= img_dt}
+    if earlier:
+        return earlier[max(earlier.keys())]
+    closest = min(captions.keys(),
+                  key=lambda d: abs((datetime.strptime(d, '%Y-%m-%d') - img_dt).days))
+    return captions[closest]
+
+
+def create_sample_viz(event_idx, event_data, max_frames=6):
     images = get_event_images(event_idx)
     if not images:
         return None
@@ -80,7 +97,7 @@ def create_sample_viz(event_idx, event_data, max_frames=8):
     if post:
         selected.append(post[0])
 
-    # Filter out images that can't be loaded
+    # Filter unreadable images
     valid = []
     for img_info in selected:
         try:
@@ -90,14 +107,20 @@ def create_sample_viz(event_idx, event_data, max_frames=8):
         except Exception:
             continue
     selected = valid
-
     if not selected:
         return None
 
     n = len(selected)
-    fig, axes = plt.subplots(1, n, figsize=(4 * n, 5.5))
-    if n == 1:
-        axes = [axes]
+
+    # Build caption list for each image
+    img_captions = []
+    for img_info in selected:
+        caption = get_caption_for_date(img_info['date'], captions)
+        img_captions.append(caption)
+
+    # Figure: images on top, captions block below
+    fig = plt.figure(figsize=(3.5 * n, 7))
+    gs = gridspec.GridSpec(2, n, height_ratios=[3, 2], hspace=0.05)
 
     event_name = event_data.get('event', '?')
     event_type = event_data.get('type', '?')
@@ -106,45 +129,41 @@ def create_sample_viz(event_idx, event_data, max_frames=8):
     county = event_data.get('county', '')
 
     fig.suptitle(f"{event_name}\n{event_type}  |  {county}, {state}  |  Strategy: {strategy}",
-                 fontsize=13, fontweight='bold', y=0.98)
+                 fontsize=13, fontweight='bold', y=0.99)
 
-    for i, (ax, img_info) in enumerate(zip(axes, selected)):
+    # Top row: images with date labels
+    for i, img_info in enumerate(selected):
+        ax = fig.add_subplot(gs[0, i])
         img = mpimg.imread(img_info['path'])
         ax.imshow(img)
-
         ax.set_xticks([])
         ax.set_yticks([])
 
         color = PHASE_COLORS.get(img_info['phase'], '#CCCCCC')
         for spine in ax.spines.values():
             spine.set_edgecolor(color)
-            spine.set_linewidth(3)
+            spine.set_linewidth(2)
 
-        ax.set_title(f"{img_info['date']}  ({img_info['phase']})",
-                     fontsize=10, color=color, fontweight='bold', pad=6)
+        ax.set_title(img_info['date'], fontsize=9, color=color, fontweight='bold', pad=4)
 
-        # Find caption: exact match, then nearest earlier, then nearest overall
-        caption = captions.get(img_info['date'], '')
-        if not caption and captions:
-            from datetime import datetime
-            img_dt = datetime.strptime(img_info['date'], '%Y-%m-%d')
-            # Prefer the latest caption that's on or before this image date
-            earlier = {d: c for d, c in captions.items()
-                       if datetime.strptime(d, '%Y-%m-%d') <= img_dt}
-            if earlier:
-                best = max(earlier.keys())
-                caption = earlier[best]
-            else:
-                # Fall back to nearest overall
-                closest = min(captions.keys(),
-                              key=lambda d: abs((datetime.strptime(d, '%Y-%m-%d') - img_dt).days))
-                caption = captions[closest]
+    # Bottom: captions as text block
+    ax_text = fig.add_subplot(gs[1, :])
+    ax_text.axis('off')
+
+    caption_lines = []
+    caption_lines.append("Constructed captions via our pipeline:")
+    for i, (img_info, caption) in enumerate(zip(selected, img_captions)):
         if caption:
-            wrapped = textwrap.fill(caption, width=40)
-            ax.set_xlabel(wrapped, fontsize=7, color='#444444',
-                          ha='center', labelpad=8, wrap=True)
+            date = img_info['date']
+            wrapped = textwrap.fill(caption, width=120)
+            caption_lines.append(f"{date}: {wrapped}")
 
-    plt.tight_layout(rect=[0, 0.02, 1, 0.92])
+    full_text = '\n'.join(caption_lines)
+    ax_text.text(0.02, 0.95, full_text, transform=ax_text.transAxes,
+                 fontsize=8, verticalalignment='top', fontfamily='monospace',
+                 bbox=dict(boxstyle='round,pad=0.5', facecolor='#f5f5f5', edgecolor='#cccccc'))
+
+    plt.tight_layout(rect=[0, 0, 1, 0.92])
     return fig
 
 
@@ -189,7 +208,6 @@ def main():
             continue
         data = results[eid]
         if 'error' in data:
-            print(f"  Event {eid}: has error, skipping")
             continue
 
         fig = create_sample_viz(eid, data)
@@ -198,11 +216,11 @@ def main():
             fig.savefig(out_path, dpi=150, bbox_inches='tight',
                         facecolor='white', edgecolor='none')
             plt.close(fig)
-            print(f"  Event {eid} ({data['event'][:30]}): saved to {out_path}")
+            print(f"  Event {eid} ({data['event'][:30]}): saved")
         else:
-            print(f"  Event {eid}: no images found")
+            print(f"  Event {eid}: no images")
 
-    print(f"\nVisualizations saved to {OUT_DIR}/")
+    print(f"\nSaved to {OUT_DIR}/")
 
 
 if __name__ == '__main__':
