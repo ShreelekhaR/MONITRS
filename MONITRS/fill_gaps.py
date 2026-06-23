@@ -20,7 +20,7 @@ import numpy as np
 from time import sleep
 from dateutil.relativedelta import relativedelta
 from google import genai
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 sys.path.insert(0, os.path.dirname(__file__))
 from run_language_pipeline import (

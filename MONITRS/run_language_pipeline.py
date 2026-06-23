@@ -28,7 +28,7 @@ import urllib.request
 from os.path import join, isfile
 from os import makedirs
 from dateutil.relativedelta import relativedelta
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 import ee
 from google import genai
 from PIL import Image
