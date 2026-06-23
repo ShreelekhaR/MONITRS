@@ -123,14 +123,21 @@ def create_sample_viz(event_idx, event_data, max_frames=8):
         ax.set_title(f"{img_info['date']}  ({img_info['phase']})",
                      fontsize=10, color=color, fontweight='bold', pad=6)
 
+        # Find caption: exact match, then nearest earlier, then nearest overall
         caption = captions.get(img_info['date'], '')
         if not caption and captions:
             from datetime import datetime
             img_dt = datetime.strptime(img_info['date'], '%Y-%m-%d')
-            closest = min(captions.keys(),
-                          key=lambda d: abs((datetime.strptime(d, '%Y-%m-%d') - img_dt).days))
-            days_off = abs((datetime.strptime(closest, '%Y-%m-%d') - img_dt).days)
-            if days_off <= 7:
+            # Prefer the latest caption that's on or before this image date
+            earlier = {d: c for d, c in captions.items()
+                       if datetime.strptime(d, '%Y-%m-%d') <= img_dt}
+            if earlier:
+                best = max(earlier.keys())
+                caption = earlier[best]
+            else:
+                # Fall back to nearest overall
+                closest = min(captions.keys(),
+                              key=lambda d: abs((datetime.strptime(d, '%Y-%m-%d') - img_dt).days))
                 caption = captions[closest]
         if caption:
             wrapped = textwrap.fill(caption, width=40)
