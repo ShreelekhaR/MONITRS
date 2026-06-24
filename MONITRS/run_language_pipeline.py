@@ -44,7 +44,10 @@ EE_PROJECT_ID = os.environ.get('EE_PROJECT_ID', PROJECT_ID)
 client = genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
 MODEL = "gemini-2.5-flash-lite"
 
-ee.Initialize(project=EE_PROJECT_ID)
+try:
+    ee.Initialize(project=EE_PROJECT_ID)
+except Exception:
+    print("Warning: Earth Engine not initialized (images won't download)")
 
 ODIR = 'Data/images'
 
@@ -76,7 +79,8 @@ def get_article_content(url):
     return None, None
 
 
-def scrape_articles(links):
+def scrape_articles(links, start_date=None):
+    year = start_date[:4] if start_date else None
     content = ''
     scraped = 0
     for link in links:
@@ -84,16 +88,19 @@ def scrape_articles(links):
             continue
         title, article_content = get_article_content(link)
         if article_content and len(article_content) > 100:
+            if year and year not in article_content and year not in (title or ''):
+                continue
             content += article_content + '\n'
             scraped += 1
     return content, scraped
 
 
 def search_ddg(event_name, event_type, county, state, start_date, max_results=5):
+    year = start_date[:4]
     queries = [
-        f"{event_name} {event_type} {county} {state} {start_date}",
-        f"{event_name} {state} {event_type}",
-        f"{event_name} disaster",
+        f"{event_name} {event_type} {county} {state} {year}",
+        f"{event_name} {state} {year}",
+        f"\"{event_name}\" {year}",
     ]
     all_links = []
     seen = set()
@@ -490,7 +497,7 @@ def process_event(event_idx, links, df, args=None):
 
     # 1. Scrape articles, fallback to DuckDuckGo
     log("Scraping articles")
-    content, scraped = scrape_articles(links)
+    content, scraped = scrape_articles(links, start_date)
     log(f"Scraped {scraped}/{len(links)} articles, {len(content)} chars")
 
     if len(content) < 200:
@@ -501,7 +508,11 @@ def process_event(event_idx, links, df, args=None):
             if any(b in link for b in BLACK_LIST):
                 continue
             title, article_content = get_article_content(link)
+            year = start_date[:4]
             if article_content and len(article_content) > 100:
+                if year not in article_content and year not in (title or ''):
+                    log(f"  [skip] {link[:60]}... (wrong year)")
+                    continue
                 content += article_content + '\n'
                 scraped += 1
         log(f"After DDG: {scraped} articles, {len(content)} chars")
