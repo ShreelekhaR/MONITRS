@@ -153,6 +153,9 @@ def download_event_images(event_idx, event_data, pre_days=14, post_days=14, max_
             phase_dates = phase_dates[-2:]
         elif phase == 'post':
             phase_dates = phase_dates[:2]
+        elif phase == 'during' and len(phase_dates) > 10:
+            step = max(1, len(phase_dates) // 10)
+            phase_dates = phase_dates[::step][:10]
 
         all_image_dates[phase] = phase_dates
         log(f"{phase}: {len(phase_dates)} images")
