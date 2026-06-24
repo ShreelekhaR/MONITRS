@@ -63,8 +63,10 @@ def get_event_images(event_idx):
             phase = 'pre'
         elif '_post_' in fname:
             phase = 'post'
-        else:
+        elif '_during_' in fname:
             phase = 'during'
+        else:
+            phase = 'caption'
         images.append({'path': join(img_dir, fname), 'date': date, 'phase': phase})
     return images
 

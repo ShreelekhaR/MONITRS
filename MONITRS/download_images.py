@@ -1,6 +1,7 @@
 """
 MONITRS v2 — Image download (runs on Workbench after language pipeline)
-Reads Data/events_processed.json and downloads Sentinel-2 images for each event.
+Reads Data/events_processed.json and downloads the nearest Sentinel-2 image
+for each caption date.
 
 Usage:
     export EE_PROJECT_ID=your-ee-project-id
@@ -13,6 +14,7 @@ Usage:
 import os
 import sys
 import json
+import re
 import datetime
 import argparse
 import numpy as np
@@ -22,7 +24,6 @@ from os import makedirs
 from dateutil.relativedelta import relativedelta
 import ee
 from PIL import Image
-from tqdm import tqdm
 
 EE_PROJECT_ID = os.environ.get('EE_PROJECT_ID', 'your-project-id')
 ee.Initialize(project=EE_PROJECT_ID)
@@ -37,102 +38,108 @@ def log(msg):
     sys.stdout.flush()
 
 
-def download_event_images(event_idx, event_data, pre_days=14, post_days=14, max_cloud_pct=30):
+def parse_caption_dates(caption_text):
+    dates = []
+    if not caption_text:
+        return dates
+    for line in caption_text.strip().split('\n'):
+        match = re.match(r'(\d{4}-\d{2}-\d{2}):', line.strip())
+        if match:
+            dates.append(match.group(1))
+    return sorted(set(dates))
+
+
+def find_nearest_image(col, target_date, region, search_days=7):
+    target_dt = datetime.datetime.strptime(target_date, '%Y-%m-%d')
+
+    for offset in range(search_days + 1):
+        for direction in [0, 1, -1]:
+            if offset == 0 and direction != 0:
+                continue
+            check_dt = target_dt + relativedelta(days=offset * (direction if direction != 0 else 1))
+            check_str = check_dt.strftime('%Y-%m-%d')
+            next_str = (check_dt + relativedelta(days=1)).strftime('%Y-%m-%d')
+
+            day_col = col.filterDate(check_str, next_str)
+            n = day_col.size().getInfo()
+            if n > 0:
+                return day_col.mosaic(), check_str
+
+    return None, None
+
+
+def download_event_images(event_idx, event_data, max_cloud_pct=50):
     center = event_data['center']
     halfwidth = event_data.get('halfwidth', 0.05)
     start_date = event_data['start_date']
     end_date = event_data['end_date']
+
+    caption_dates = parse_caption_dates(event_data.get('captions', ''))
+    if not caption_dates:
+        log("No caption dates found")
+        return []
 
     region = ee.Geometry.Rectangle([
         [center[1] - halfwidth, center[0] - halfwidth],
         [center[1] + halfwidth, center[0] + halfwidth],
     ])
 
-    event_start = datetime.datetime.strptime(start_date, '%Y-%m-%d')
-    end_clean = end_date[:10] if len(end_date) > 10 else end_date
-    event_end = datetime.datetime.strptime(end_clean, '%Y-%m-%d')
+    # Wide date range to search for nearest images
+    earliest = datetime.datetime.strptime(caption_dates[0], '%Y-%m-%d') - relativedelta(days=14)
+    latest = datetime.datetime.strptime(caption_dates[-1], '%Y-%m-%d') + relativedelta(days=14)
 
-    pre_start = (event_start - relativedelta(days=pre_days)).strftime('%Y-%m-%d')
-    post_end = (event_end + relativedelta(days=post_days)).strftime('%Y-%m-%d')
-
-    base_col = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED').filterBounds(region)
-
-    phases = {
-        'pre': (pre_start, start_date),
-        'during': (start_date, end_clean),
-        'post': (end_clean, post_end),
-    }
+    base_col = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
+        .filterBounds(region) \
+        .filterDate(earliest.strftime('%Y-%m-%d'), latest.strftime('%Y-%m-%d')) \
+        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', max_cloud_pct))
 
     outdir = join(ODIR, str(event_idx))
     makedirs(outdir, exist_ok=True)
-    all_dates = {}
 
-    for phase, (d_start, d_end) in phases.items():
-        if d_start >= d_end:
-            all_dates[phase] = []
+    downloaded = []
+
+    for target_date in caption_dates:
+        output_file = join(outdir, f'{event_idx}_{target_date}.png')
+        if isfile(output_file) and os.path.getsize(output_file) > 1000:
+            downloaded.append(target_date)
             continue
 
-        col = base_col.filterDate(d_start, d_end).filter(
-            ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', max_cloud_pct))
+        mosaic, actual_date = find_nearest_image(base_col, target_date, region)
+        if mosaic is None:
+            log(f"  {target_date}: no image within 7 days")
+            continue
+
         try:
-            num = col.size().getInfo()
-        except Exception:
-            all_dates[phase] = []
-            continue
+            url = mosaic.getThumbURL({
+                'bands': ['B4', 'B3', 'B2'],
+                'min': 0, 'max': 3000, 'gamma': 1,
+                'dimensions': '512x512',
+                'region': region,
+            })
+            urllib.request.urlretrieve(url, output_file)
+            img = Image.open(output_file)
+            if img.format != 'PNG':
+                img.save(output_file, 'PNG')
+            img_array = np.array(img)
 
-        if num == 0:
-            all_dates[phase] = []
-            continue
-
-        img_list = col.sort('system:time_start').toList(num)
-        seen_dates = set()
-        phase_dates = []
-
-        for i in range(num):
-            try:
-                img_date = ee.Image(img_list.get(i)).date().format('YYYY-MM-dd').getInfo()
-            except Exception:
+            mean_val = np.mean(img_array)
+            black_pct = np.count_nonzero(img_array.sum(axis=2) == 0) / (img_array.shape[0] * img_array.shape[1])
+            if mean_val < 25 or black_pct > 0.05:
+                os.remove(output_file)
+                log(f"  {target_date}: rejected (dark/nodata)")
                 continue
-            if img_date in seen_dates:
-                continue
-            seen_dates.add(img_date)
 
-            output_file = join(outdir, f'{event_idx}_{phase}_{img_date}.png')
+            downloaded.append(target_date)
+            suffix = f" (actual: {actual_date})" if actual_date != target_date else ""
+            log(f"  {target_date}: downloaded{suffix}")
+
+        except Exception as e:
             if isfile(output_file):
-                phase_dates.append(img_date)
-                continue
+                os.remove(output_file)
+            log(f"  {target_date}: error — {e}")
+            continue
 
-            day_end = (datetime.datetime.strptime(img_date, '%Y-%m-%d') + relativedelta(days=1)).strftime('%Y-%m-%d')
-            mosaic = col.filterDate(img_date, day_end).mosaic()
-
-            try:
-                url = mosaic.getThumbURL({
-                    'bands': ['B4', 'B3', 'B2'],
-                    'min': 0, 'max': 3000, 'gamma': 1,
-                    'dimensions': '512x512',
-                    'region': region,
-                })
-                urllib.request.urlretrieve(url, output_file)
-                img = Image.open(output_file)
-                if img.format != 'PNG':
-                    img.save(output_file, 'PNG')
-                img_array = np.array(img)
-                mean_val = np.mean(img_array)
-                black_pct = np.count_nonzero(img_array.sum(axis=2) == 0) / (img_array.shape[0] * img_array.shape[1])
-                white_pct = np.count_nonzero(img_array.min(axis=2) > 240) / (img_array.shape[0] * img_array.shape[1])
-                if mean_val < 25 or mean_val > 240 or black_pct > 0.05 or white_pct > 0.5:
-                    os.remove(output_file)
-                    continue
-                phase_dates.append(img_date)
-            except Exception:
-                if isfile(output_file):
-                    os.remove(output_file)
-                continue
-
-        all_dates[phase] = phase_dates
-        log(f"{phase}: {len(phase_dates)} images")
-
-    return all_dates
+    return downloaded
 
 
 def main():
@@ -148,7 +155,6 @@ def main():
     with open(INPUT_FILE) as f:
         events = json.load(f)
 
-    # Track which events already have images
     progress_file = 'Data/download_progress.json'
     if os.path.exists(progress_file):
         with open(progress_file) as f:
@@ -164,7 +170,7 @@ def main():
 
     total = len(event_ids)
     for i, eid in enumerate(event_ids):
-        if eid in progress:
+        if eid in progress and 'error' not in progress[eid]:
             continue
 
         event_data = events[eid]
@@ -175,10 +181,9 @@ def main():
         print(f"\n[{i+1}/{total}] Event {eid}: {event_data['event']} ({event_data['strategy']})")
 
         try:
-            image_dates = download_event_images(eid, event_data)
-            n_total = sum(len(v) for v in image_dates.values())
-            progress[eid] = {'image_dates': image_dates, 'total_images': n_total}
-            log(f"Downloaded {n_total} images")
+            downloaded = download_event_images(eid, event_data)
+            progress[eid] = {'downloaded_dates': downloaded, 'total': len(downloaded)}
+            log(f"Downloaded {len(downloaded)} images")
         except KeyboardInterrupt:
             print("\n\nInterrupted. Progress saved.")
             with open(progress_file, 'w') as f:
@@ -196,7 +201,7 @@ def main():
         json.dump(progress, f, indent=2)
 
     n_ok = sum(1 for v in progress.values() if 'error' not in v and 'skipped' not in v)
-    print(f"\n\nDone. {n_ok}/{len(progress)} events downloaded. Progress: {progress_file}")
+    print(f"\n\nDone. {n_ok}/{len(progress)} events downloaded.")
 
 
 if __name__ == '__main__':
