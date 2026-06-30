@@ -398,7 +398,7 @@ def get_firms_hotspots(fema_center, start_date, end_date):
 # --- Image download ---
 
 def download_images(center, start_date, end_date, event_idx,
-                    halfwidth=0.05, pre_days=14, post_days=14, max_cloud_pct=30):
+                    halfwidth=0.05, pre_days=14, post_days=14, max_cloud_pct=50):
     region = ee.Geometry.Rectangle([
         [center[1] - halfwidth, center[0] - halfwidth],
         [center[1] + halfwidth, center[0] + halfwidth],
@@ -406,74 +406,67 @@ def download_images(center, start_date, end_date, event_idx,
     event_start = datetime.datetime.strptime(start_date, '%Y-%m-%d')
     end_clean = end_date[:10] if len(end_date) > 10 else end_date
     event_end = datetime.datetime.strptime(end_clean, '%Y-%m-%d')
-    pre_start = (event_start - relativedelta(days=pre_days)).strftime('%Y-%m-%d')
-    post_end = (event_end + relativedelta(days=post_days)).strftime('%Y-%m-%d')
+    query_start = (event_start - relativedelta(days=pre_days)).strftime('%Y-%m-%d')
+    query_end = (event_end + relativedelta(days=post_days)).strftime('%Y-%m-%d')
 
-    base_col = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED').filterBounds(region)
-    phases = {
-        'pre': (pre_start, start_date),
-        'during': (start_date, end_clean),
-        'post': (end_clean, post_end),
-    }
+    col = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
+        .filterBounds(region) \
+        .filterDate(query_start, query_end) \
+        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', max_cloud_pct)) \
+        .sort('system:time_start')
+
+    num = col.size().getInfo()
+    log(f"Found {num} scenes ({query_start} to {query_end})")
+
+    if num == 0:
+        return []
+
     outdir = join(ODIR, str(event_idx))
     makedirs(outdir, exist_ok=True)
-    all_dates = {}
 
-    for phase, (d_start, d_end) in phases.items():
-        if d_start >= d_end:
-            all_dates[phase] = []
-            continue
-        col = base_col.filterDate(d_start, d_end).filter(
-            ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', max_cloud_pct))
+    img_list = col.toList(num)
+    unique_dates = []
+    seen = set()
+    for i in range(num):
         try:
-            num = col.size().getInfo()
+            d = ee.Image(img_list.get(i)).date().format('YYYY-MM-dd').getInfo()
+            if d not in seen:
+                seen.add(d)
+                unique_dates.append(d)
         except Exception:
-            all_dates[phase] = []
-            continue
-        if num == 0:
-            all_dates[phase] = []
             continue
 
-        img_list = col.sort('system:time_start').toList(num)
-        seen = set()
-        phase_dates = []
-        for i in range(num):
-            try:
-                img_date = ee.Image(img_list.get(i)).date().format('YYYY-MM-dd').getInfo()
-            except Exception:
+    downloaded = []
+    for img_date in unique_dates:
+        output_file = join(outdir, f'{event_idx}_{img_date}.png')
+        if isfile(output_file) and os.path.getsize(output_file) > 1000:
+            downloaded.append(img_date)
+            continue
+        day_end = (datetime.datetime.strptime(img_date, '%Y-%m-%d') + relativedelta(days=1)).strftime('%Y-%m-%d')
+        mosaic = col.filterDate(img_date, day_end).mosaic()
+        try:
+            url = mosaic.getThumbURL({
+                'bands': ['B4', 'B3', 'B2'], 'min': 0, 'max': 3000,
+                'gamma': 1, 'dimensions': '512x512', 'region': region,
+            })
+            urllib.request.urlretrieve(url, output_file)
+            img = Image.open(output_file)
+            if img.format != 'PNG':
+                img.save(output_file, 'PNG')
+            img_array = np.array(img)
+            mean_val = np.mean(img_array)
+            black_pct = np.count_nonzero(img_array.sum(axis=2) == 0) / (img_array.shape[0] * img_array.shape[1])
+            if mean_val < 25 or black_pct > 0.05:
+                os.remove(output_file)
                 continue
-            if img_date in seen:
-                continue
-            seen.add(img_date)
-            output_file = join(outdir, f'{event_idx}_{phase}_{img_date}.png')
+            downloaded.append(img_date)
+        except Exception:
             if isfile(output_file):
-                phase_dates.append(img_date)
-                continue
-            day_end = (datetime.datetime.strptime(img_date, '%Y-%m-%d') + relativedelta(days=1)).strftime('%Y-%m-%d')
-            mosaic = col.filterDate(img_date, day_end).mosaic()
-            try:
-                url = mosaic.getThumbURL({
-                    'bands': ['B4', 'B3', 'B2'], 'min': 0, 'max': 3000,
-                    'gamma': 1, 'dimensions': '512x512', 'region': region,
-                })
-                urllib.request.urlretrieve(url, output_file)
-                img_array = np.array(Image.open(output_file))
-                mean_val = np.mean(img_array)
-                black_pct = np.count_nonzero(img_array.sum(axis=2) == 0) / (img_array.shape[0] * img_array.shape[1])
-                white_pct = np.count_nonzero(img_array.min(axis=2) > 240) / (img_array.shape[0] * img_array.shape[1])
-                if mean_val < 25 or mean_val > 240 or black_pct > 0.05 or white_pct > 0.5:
-                    os.remove(output_file)
-                    continue
-                phase_dates.append(img_date)
-            except Exception:
-                if isfile(output_file):
-                    os.remove(output_file)
-                continue
-        all_dates[phase] = phase_dates
+                os.remove(output_file)
+            continue
 
-    total = sum(len(v) for v in all_dates.values())
-    log(f"  {total} images ({', '.join(f'{k}:{len(v)}' for k,v in all_dates.items())})")
-    return all_dates
+    log(f"Downloaded {len(downloaded)}/{len(unique_dates)} images")
+    return downloaded
 
 
 # --- Process one event ---
@@ -573,24 +566,15 @@ def process_event(event_idx, links, df, args=None):
     if strategy == 'fema':
         log("All estimation failed, using FEMA center")
 
-    # 4. Download images (skip with --no-images)
-    all_image_dates = {}
+    # 4. Download images at the chosen center (skip with --no-images)
+    image_dates = []
     if not getattr(args, 'no_images', False):
-        download_centers = {'fema': (list(fema_center), 0.05)}
-        if llm_center:
-            download_centers['llm'] = (llm_center, halfwidth)
-        if firms_data:
-            download_centers['firms'] = (firms_data['center'], 0.05)
-
-        for strat_name, (strat_center, strat_hw) in download_centers.items():
-            log(f"Downloading images: {strat_name} center ({strat_center[0]:.4f}, {strat_center[1]:.4f})")
-            try:
-                dates = download_images(strat_center, start_date, end_date,
-                                        f"{event_idx}_{strat_name}", halfwidth=strat_hw)
-                all_image_dates[strat_name] = dates
-            except Exception as e:
-                log(f"Download failed for {strat_name}: {e}")
-                all_image_dates[strat_name] = {'pre': [], 'during': [], 'post': []}
+        log(f"Downloading images at {strategy} center ({center[0]:.4f}, {center[1]:.4f})")
+        try:
+            image_dates = download_images(center, start_date, end_date,
+                                          event_idx, halfwidth=halfwidth)
+        except Exception as e:
+            log(f"Download failed: {e}")
     else:
         log("Skipping image download (--no-images)")
 
@@ -626,7 +610,7 @@ def process_event(event_idx, links, df, args=None):
         'event_image_alignment': {k: v for k, v in aligned.items()},
         'num_articles_scraped': scraped,
         'article_links': links,
-        'image_dates': all_image_dates,
+        'image_dates': image_dates,
     }
 
 
