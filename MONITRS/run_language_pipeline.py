@@ -491,8 +491,10 @@ def process_event(event_idx, links, df, args=None):
     if len(end_date) > 10:
         end_date = end_date[:10]
 
+    event_name = row['declarationTitle']
+
     print(f"\n{'='*60}")
-    print(f"EVENT {event_idx}: {row['declarationTitle']}")
+    print(f"EVENT {event_idx}: {event_name}")
     print(f"  {event_type} | {state} | {county} | {start_date} to {end_date}")
 
     # 1. Scrape articles, fallback to DuckDuckGo
@@ -519,6 +521,11 @@ def process_event(event_idx, links, df, args=None):
 
     if len(content) < 100:
         return {'error': 'no_content', 'event': event_name}
+
+    # Truncate to avoid token limits (~4 chars per token, 500K token limit)
+    if len(content) > 500000:
+        log(f"Truncating content from {len(content)} to 500000 chars")
+        content = content[:500000]
 
     # 2. Extract location-events
     log("Extracting location-event pairs")
@@ -587,21 +594,14 @@ def process_event(event_idx, links, df, args=None):
     else:
         log("Skipping image download (--no-images)")
 
-    # 5. Generate captions aligned to actual image dates
+    # 5. Generate captions using FEMA date range
     log("Generating captions")
-    # Collect all unique image dates across strategies (pre + during + post)
-    all_img_dates = set()
-    for strat_dates in all_image_dates.values():
-        if isinstance(strat_dates, dict):
-            for phase_dates in strat_dates.values():
-                for d in phase_dates:
-                    all_img_dates.add(d)
-    all_img_dates = sorted(all_img_dates)
+    caption_dates = pd.date_range(start_date, end_date, freq='5D').strftime('%Y-%m-%d').tolist()
+    if end_date not in caption_dates:
+        caption_dates.append(end_date)
 
-    # Assign article events to image dates
-    aligned = align_events_to_images(loc_events, all_img_dates, start_date)
+    aligned = align_events_to_images(loc_events, caption_dates, start_date)
 
-    # Generate captions with the alignment context
     captions = generate_aligned_captions(
         content, aligned, event_type, county, state, center, strategy)
 

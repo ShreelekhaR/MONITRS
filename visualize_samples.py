@@ -93,8 +93,11 @@ def create_sample_viz(event_idx, event_data, max_frames=999):
 
     captions = parse_captions(event_data.get('captions', ''))
 
-    # Show all images, just skip corrupt files
-    selected = [img for img in images if os.path.getsize(img['path']) > 1000]
+    # Show all images sorted chronologically, skip corrupt files
+    selected = sorted(
+        [img for img in images if os.path.getsize(img['path']) > 1000],
+        key=lambda x: x['date']
+    )
     if not selected:
         return None
 
