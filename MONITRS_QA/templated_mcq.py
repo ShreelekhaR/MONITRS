@@ -645,64 +645,49 @@ class MultipleChoiceGenerator:
 
 # Example usage
 if __name__ == "__main__":
+    from load_v2 import load_all_v1_format, get_image_paths
+
     generator = MultipleChoiceGenerator()
-    
-    # Read CSV2 format
-    file = open('reorganized_total_data.csv', 'r')
-    lines = file.readlines()
 
-    # find event types from FEMA_filtered_processed.csv
-    # read csv as csv
-    df = pd.read_csv('FEMA_filtered_processed.csv', header=0)
-    
+    # Load v2 data
+    all_events = load_all_v1_format()
+    event_ids = sorted(all_events.keys(), key=int)
+    print(f"Loaded {len(event_ids)} events")
 
-    
-    print("number of lines in file: ", len(lines))
+    # 80/20 train/test split
+    split = int(len(event_ids) * 0.8)
+    train_ids = event_ids[:split]
+    test_ids = event_ids[split:]
 
-    train_lines = lines[:int(len(lines)*0.8)]
-    test_lines = lines[int(len(lines)*0.8):]
+    for split_name, ids in [('train', train_ids), ('test', test_ids)]:
+        image_paths = {}
+        event_types = {}
+        lines_for_process = []
 
-    lines = train_lines
-    
-    # use only ids that are in file
-    ids = []
-    for line in lines:
-        id_num = line.split(',')[0]
-        ids.append(id_num)
-    
-    image_paths = {}
-    for id_num in ids:
-        image_paths[id_num] = generator.generate_image_paths(id_num)
+        for eid in ids:
+            edata = all_events[eid]
+            paths = get_image_paths(eid)
+            if not paths:
+                continue
+            image_paths[eid] = paths
+            event_types[eid] = edata['event_type']
+            # Build a fake CSV line that parse_line can handle, OR
+            # directly create examples using the v1-format dict
+            lines_for_process.append(edata)
 
-    # get event type per id
-    event_types = {}
-    for id_num in ids:
-        # df incidentType where index is id_num
-        event_type_ind = df.loc[df['index'] == int(id_num), 'incidentType'].values[0]
-        event_types[id_num] = event_type_ind
-    
-    print("number of image paths: ", len(image_paths))
-    
-    # Process the file (limit to first 10 lines for testing)
-    dataset = generator.process_file(lines, image_paths, event_types)
-    
-    # Save the dataset
-    with open('new_train_multiple_choice.json', 'w') as f:
-        json.dump(dataset, f, indent=2)
-    
-    lines = test_lines
+        print(f"{split_name}: {len(lines_for_process)} events with images")
 
-    # use only ids that are in file
-    ids = []
-    for line in lines:
-        id_num = line.split(',')[0]
-        ids.append(id_num)
-    image_paths = {}
-    for id_num in ids:
-        image_paths[id_num] = generator.generate_image_paths(id_num)
-    print("number of image paths: ", len(image_paths))
-    # Process the file (limit to first 10 lines for testing)
-    dataset = generator.process_file(lines, image_paths, event_types)
-    # Save the dataset
-    with open('new_test_multiple_choice.json', 'w') as f:
-        json.dump(dataset, f, indent=2)
+        # Process using v1-format dicts directly
+        dataset = []
+        generator.global_id_counter = 0
+        for edata in lines_for_process:
+            edata['event_type'] = event_types.get(edata['id'], 'Unknown')
+            paths = image_paths.get(edata['id'])
+            if not paths:
+                continue
+            examples = generator.create_multiple_choice_example(edata, paths)
+            dataset.extend(examples)
+
+        with open(f'new_{split_name}_multiple_choice.json', 'w') as f:
+            json.dump(dataset, f, indent=2)
+        print(f"Saved {len(dataset)} questions to new_{split_name}_multiple_choice.json")

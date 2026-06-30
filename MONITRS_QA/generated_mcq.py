@@ -367,75 +367,35 @@ def create_training_example(task_type: str, question_id_base: int,
     return examples, question_id_base
 
 if __name__ == "__main__":
-    # Load the data file
-    file = open('reorganized_total_data.csv', 'r')
-    lines = file.readlines()
-    file.close()
-    
-    print("number of lines in file: ", len(lines))
+    from load_v2 import load_all_v1_format, get_image_paths
 
-    train_lines = lines[:int(len(lines)*0.8)]
-    test_lines = lines[int(len(lines)*0.8):]
+    all_events = load_all_v1_format()
+    event_ids = sorted(all_events.keys(), key=int)
+    print(f"Loaded {len(event_ids)} events")
 
-    images_path = 'all_events'
+    split = int(len(event_ids) * 0.8)
+    train_ids = event_ids[:split]
+    test_ids = event_ids[split:]
 
-    image_paths = {}
-    for id_num in os.listdir(images_path):
-        image_paths[id_num] = generate_image_paths(id_num)
-    
-    lines = train_lines
+    for split_name, ids in [('train', train_ids), ('test', test_ids)]:
+        dataset = []
+        question_id_base = 0
 
-    dataset = []
-    question_id_base = 0
-    start_val = 0
-    with open('train_generated_multiple_choice_q_a.json', 'a+') as f:
-        if start_val == 0:
-            f.write('[')
-        for line in tqdm(lines):
-            event_data = parse_line(line)
-            task_type = "multiple_choice"
-            try:
-                examples, question_id_base = create_training_example(task_type, question_id_base, event_data, image_paths.get(event_data['id']), True)
-                if examples:
-                    for example in examples:
-                        dataset.append(example)
-                        # write to json file
-                        f.write(json.dumps(example, indent=2))
-                        f.write(',')
-                        start_val += 1
-            
-            except Exception as e:
-                print(e)
+        for eid in tqdm(ids):
+            edata = all_events[eid]
+            paths = get_image_paths(eid)
+            if not paths:
                 continue
-            f.flush()
-        # Remove the trailing comma and close the array
-        f.seek(f.tell() - 1, 0)
-        f.write(']')
-
-    # Process test lines
-    dataset = []
-    question_id_base = 0
-    start_val = 0
-    with open('test_generated_multiple_choice_q_a.json', 'a+') as f:
-        if start_val == 0:
-            f.write('[')
-        for line in tqdm(lines):
-            event_data = parse_line(line)
-            task_type = "multiple_choice"
             try:
-                examples, question_id_base = create_training_example(task_type, question_id_base, event_data, image_paths.get(event_data['id']), True)
-                if examples:
-                    for example in examples:
-                        dataset.append(example)
-                        # write to json file
-                        f.write(json.dumps(example, indent=2))
-                        f.write(',')
-                        start_val += 1
-            
+                result = create_training_example("multiple_choice", question_id_base, edata, paths, True)
+                if result:
+                    examples, question_id_base = result
+                    dataset.extend(examples)
             except Exception as e:
-                print(e)
+                print(f"Event {eid}: {e}")
                 continue
-            f.flush()
-        # Remove the trailing comma and close the array
-        f.seek(f.tell() - 1, 0)
-        f.write(']')
+
+        out_file = f'{split_name}_generated_multiple_choice_q_a.json'
+        with open(out_file, 'w') as f:
+            json.dump(dataset, f, indent=2)
+        print(f"Saved {len(dataset)} questions to {out_file}")
