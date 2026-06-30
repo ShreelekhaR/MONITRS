@@ -79,7 +79,7 @@ def get_article_content(url):
     return None, None
 
 
-def scrape_articles(links, start_date=None):
+def scrape_articles(links, start_date=None, event_name=None):
     year = start_date[:4] if start_date else None
     content = ''
     scraped = 0
@@ -88,8 +88,10 @@ def scrape_articles(links, start_date=None):
             continue
         title, article_content = get_article_content(link)
         if article_content and len(article_content) > 100:
-            if year and year not in article_content and year not in (title or '') and year not in link:
-                continue
+            text_to_check = (article_content + ' ' + (title or '') + ' ' + link).lower()
+            if year and year not in text_to_check:
+                if event_name and event_name.lower().split()[0] not in text_to_check:
+                    continue
             content += article_content + '\n'
             scraped += 1
     return content, scraped
@@ -492,7 +494,7 @@ def process_event(event_idx, links, df, args=None):
 
     # 1. Scrape articles, fallback to DuckDuckGo
     log("Scraping articles")
-    content, scraped = scrape_articles(links, start_date)
+    content, scraped = scrape_articles(links, start_date, event_name)
     log(f"Scraped {scraped}/{len(links)} articles, {len(content)} chars")
 
     if len(content) < 200:
@@ -505,9 +507,11 @@ def process_event(event_idx, links, df, args=None):
             title, article_content = get_article_content(link)
             year = start_date[:4]
             if article_content and len(article_content) > 100:
-                if year not in article_content and year not in (title or '') and year not in link:
-                    log(f"  [skip] {link[:60]}... (wrong year)")
-                    continue
+                text_to_check = (article_content + ' ' + (title or '') + ' ' + link).lower()
+                if year not in text_to_check:
+                    if event_name and event_name.lower().split()[0] not in text_to_check:
+                        log(f"  [skip] {link[:60]}... (wrong year/event)")
+                        continue
                 content += article_content + '\n'
                 scraped += 1
         log(f"After DDG: {scraped} articles, {len(content)} chars")
