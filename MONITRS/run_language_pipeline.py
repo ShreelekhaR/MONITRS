@@ -88,7 +88,7 @@ def scrape_articles(links, start_date=None):
             continue
         title, article_content = get_article_content(link)
         if article_content and len(article_content) > 100:
-            if year and year not in article_content and year not in (title or ''):
+            if year and year not in article_content and year not in (title or '') and year not in link:
                 continue
             content += article_content + '\n'
             scraped += 1
@@ -505,7 +505,7 @@ def process_event(event_idx, links, df, args=None):
             title, article_content = get_article_content(link)
             year = start_date[:4]
             if article_content and len(article_content) > 100:
-                if year not in article_content and year not in (title or ''):
+                if year not in article_content and year not in (title or '') and year not in link:
                     log(f"  [skip] {link[:60]}... (wrong year)")
                     continue
                 content += article_content + '\n'
