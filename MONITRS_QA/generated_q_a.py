@@ -18,7 +18,7 @@ client = genai.Client(
     project=PROJECT_ID,
     location=LOCATION,
 )
-MODEL = "gemini-2.5-flash-lite"
+MODEL = "gemini-3.1-flash-lite"
 
 
 def geo_to_pixel(locations, center, radius = 5):
@@ -311,10 +311,22 @@ if __name__ == "__main__":
     test_ids = event_ids[split:]
 
     for split_name, ids in [('train', train_ids), ('test', test_ids)]:
-        dataset = []
-        question_id_base = 0
+        out_file = f'{split_name}_generated_q_a.json'
+
+        # Resume from existing file
+        if os.path.exists(out_file):
+            dataset = json.load(open(out_file))
+            done_ids = set(str(d.get('folder_id', '')) for d in dataset)
+            question_id_base = len(dataset)
+            print(f"Resuming {split_name}: {len(dataset)} existing, skipping {len(done_ids)} events")
+        else:
+            dataset = []
+            done_ids = set()
+            question_id_base = 0
 
         for eid in tqdm(ids):
+            if eid in done_ids:
+                continue
             edata = all_events[eid]
             paths = get_image_paths(eid)
             if not paths:
@@ -328,7 +340,10 @@ if __name__ == "__main__":
                 print(f"Event {eid}: {e}")
                 continue
 
-        out_file = f'{split_name}_generated_q_a.json'
+            if len(dataset) % 50 == 0:
+                with open(out_file, 'w') as f:
+                    json.dump(dataset, f, indent=2)
+
         with open(out_file, 'w') as f:
             json.dump(dataset, f, indent=2)
         print(f"Saved {len(dataset)} questions to {out_file}")
