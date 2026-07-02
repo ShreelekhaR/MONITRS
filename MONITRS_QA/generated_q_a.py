@@ -332,5 +332,3 @@ if __name__ == "__main__":
         with open(out_file, 'w') as f:
             json.dump(dataset, f, indent=2)
         print(f"Saved {len(dataset)} questions to {out_file}")
-            f.flush()
-        f.write(']')
