@@ -18,7 +18,7 @@ client = genai.Client(
     project=PROJECT_ID,
     location=LOCATION,
 )
-MODEL = "gemini-3.1-flash-lite"
+MODEL = "gemini-2.5-flash"
 
 
 def geo_to_pixel(locations, center, radius = 5):
