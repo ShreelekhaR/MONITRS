@@ -30,7 +30,14 @@ for location in LOCATIONS:
     client = genai.Client(vertexai=True, project=PROJECT_ID, location=location)
     for model in MODELS:
         try:
-            r = client.models.generate_content(model=model, contents='Say OK')
+            r = client.models.generate_content(
+                model=model,
+                contents='Say OK',
+                config={'response_mime_type': 'application/json',
+                        'response_schema': {'type': 'object',
+                                            'properties': {'status': {'type': 'string'}},
+                                            'required': ['status']}}
+            )
             print(f"  {model:<30} ✓ OK")
         except Exception as e:
             err = str(e)[:60]
