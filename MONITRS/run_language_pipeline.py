@@ -36,13 +36,13 @@ from time import sleep
 
 # --- Config ---
 PROJECT_ID = os.environ.get('GCP_PROJECT_ID', 'your-project-id')
-LOCATION = os.environ.get('GCP_LOCATION', 'us-central1')
+LOCATION = os.environ.get('GCP_LOCATION', 'global')
 FIRMS_MAP_KEY = os.environ.get('FIRMS_MAP_KEY', '')
 
 EE_PROJECT_ID = os.environ.get('EE_PROJECT_ID', PROJECT_ID)
 
 client = genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.1-flash-lite"
 
 try:
     ee.Initialize(project=EE_PROJECT_ID)

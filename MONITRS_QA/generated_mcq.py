@@ -12,14 +12,14 @@ from time import sleep
 from tqdm import tqdm
 
 PROJECT_ID = os.environ.get('GCP_PROJECT_ID', 'your-project-id')
-LOCATION = os.environ.get('GCP_LOCATION', 'us-central1')
+LOCATION = os.environ.get('GCP_LOCATION', 'global')
 
 client = genai.Client(
     vertexai=True,
     project=PROJECT_ID,
     location=LOCATION,
 )
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.1-flash-lite"
 
 
 def geo_to_pixel(locations, center, radius = 5):
