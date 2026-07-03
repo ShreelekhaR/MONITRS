@@ -42,7 +42,7 @@ FIRMS_MAP_KEY = os.environ.get('FIRMS_MAP_KEY', '')
 EE_PROJECT_ID = os.environ.get('EE_PROJECT_ID', PROJECT_ID)
 
 client = genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
-MODEL = "gemini-3.1-flash-lite"
+MODEL = "gemini-2.5-flash"
 
 try:
     ee.Initialize(project=EE_PROJECT_ID)
