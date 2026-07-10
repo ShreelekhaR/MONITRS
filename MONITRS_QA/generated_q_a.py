@@ -147,27 +147,32 @@ def generate_image_paths(id_num: str) -> str:
 def query_q_a(events) -> List[str]:
 
     # prompt
-    prompt = f"""Given a set of statements in an order I'd like you to make 3 questions about the events described.\
-        Make the questions diverse, covering different aspects of the events that could be aided answerable using satellite imagery of the event \
-        Statements: \n{events}\
-        Format your response exactly like this:\
-        **Question 1:** [Your first question here]\
-        **Answer 1:** [Your first answer as a complete sentence]\
-        **Question 2:** [Your second question here\
-        **Answer 2:** [Your second answer as a complete sentence]\
-        **Question 3:** [Your third question here]\
-        **Answer 3:** [Your third answer as a complete sentence]\
-        \
-        Here are some examples of statements: 2021-12-11:  No events described in the article are visible from this date. 2021-12-15: Very strong winds in Kansas, Texas, and Oklahoma caused numerous wildfires to spread rapidly. Blowing dust severely reduced visibility, causing streetlights to turn on at midday in some areas. 2021-12-16: A large wildfire in Russell and Ellis Counties, Kansas burned approximately 365,850 acres, destroying at least 10 homes.  High winds, gusting up to 100 mph, fueled the fire and other blazes across western Kansas, Oklahoma, and Texas. 2021-12-21: No events described in the article are visible from this date. 2021-12-26: No events described in the article are visible from this date. 2021-12-31: No events described in the article are visible from this date. 2022-01-05: No events described in the article are visible from this date. 2022-01-10: No events described in the article are visible from this date. 2022-01-15: No events described in the article are visible from this date. \
-        Here are some examples of questions: \
+    prompt = f"""Given factual statements about a natural disaster, create 3 questions and answers.
 
-        **Question 1:** What were the conditions that led to the rapid spread of wildfires in Kansas, Texas, and Oklahoma?\
-        **Answer 1:** The conditions that led to the rapid spread of wildfires in Kansas, Texas, and Oklahoma were very strong winds, low humidity, and high temperatures.\
-        **Question 2:** What was the impact of the wildfires in Russell and Ellis Counties, Kansas?\
-        **Answer 2:** The impact of the wildfires in Russell and Ellis Counties, Kansas was the burning of approximately 365,850 acres and the destruction
-        of at least 10 homes.\
-        **Question 3:** when did the wildfires in Kansas, Texas, and Oklahoma occur?\
-        **Answer 3:** The wildfires in Kansas, Texas, and Oklahoma occurred on December 15, 2021\
+        RULES:
+        - Questions should ask about specific facts: damage, timeline, affected areas, impact on people
+        - Answers must state facts directly from the statements
+        - NEVER use "would", "would be", "would show", "would confirm", "would allow"
+        - Answers must be definitive: "The fire burned 365,850 acres" NOT "satellite imagery would show burning"
+        - If the statements describe a hurricane, ask about the hurricane — not generic vegetation
+
+        Statements: \n{events}
+
+        Format your response exactly like this:
+        **Question 1:** [Your first question here]
+        **Answer 1:** [Your first answer as a complete, factual sentence]
+        **Question 2:** [Your second question here]
+        **Answer 2:** [Your second answer as a complete, factual sentence]
+        **Question 3:** [Your third question here]
+        **Answer 3:** [Your third answer as a complete, factual sentence]
+
+        Examples:
+        **Question 1:** How many acres were burned in Russell and Ellis Counties, Kansas?
+        **Answer 1:** Approximately 365,850 acres were burned in Russell and Ellis Counties, Kansas, destroying at least 10 homes.
+        **Question 2:** When did the wildfires in Kansas begin?
+        **Answer 2:** The wildfires began on December 15, 2021, driven by very strong winds gusting up to 100 mph.
+        **Question 3:** What was the primary cause of the rapid fire spread?
+        **Answer 3:** Strong winds, gusting up to 100 mph, were the primary cause of the rapid wildfire spread across western Kansas, Oklahoma, and Texas.
         """
     try:
         summary = client.models.generate_content(model=MODEL, contents=prompt)

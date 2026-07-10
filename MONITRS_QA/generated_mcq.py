@@ -147,10 +147,16 @@ def generate_image_paths(id_num: str) -> str:
 def query_multiple_choice_q_a(events) -> List[str]:
     """Generate multiple choice questions and answers using Gemini."""
     # prompt
-    prompt = f"""Given a set of statements in an order I'd like you to make 3 multiple choice questions about the events described.
-        Make the questions diverse, covering different aspects of the events that could be answerable using satellite imagery of the event.
+    prompt = f"""Given a set of factual statements about a natural disaster, create 3 multiple choice questions.
+
+        RULES:
+        - Questions should be about specific facts: acreage, locations, dates, damage, progression
+        - All options and answers must state facts directly — NO speculative language
+        - NEVER use "would", "would be", "would show", "would allow", "could be"
+        - Answers must be definitive: "The fire burned 365,850 acres" NOT "satellite imagery would show burning"
+
         Each question should have 4 options (A, B, C, and D) with only one correct answer.
-        
+
         Statements: \n{events}
         
         Format your response exactly like this:
