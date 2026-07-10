@@ -147,13 +147,15 @@ def generate_image_paths(id_num: str) -> str:
 def query_multiple_choice_q_a(events) -> List[str]:
     """Generate multiple choice questions and answers using Gemini."""
     # prompt
-    prompt = f"""Given a set of factual statements about a natural disaster, create 3 multiple choice questions.
+    prompt = f"""You are creating Visual Question Answering (VQA) multiple choice questions for satellite imagery
+        of a natural disaster. Questions must REQUIRE looking at the images to answer.
 
         RULES:
-        - Questions should be about specific facts: acreage, locations, dates, damage, progression
-        - All options and answers must state facts directly — NO speculative language
-        - NEVER use "would", "would be", "would show", "would allow", "could be"
-        - Answers must be definitive: "The fire burned 365,850 acres" NOT "satellite imagery would show burning"
+        - Questions must reference what is VISIBLE in the images (colors, patterns, changes, features)
+        - All options must describe visual observations, not text-only facts
+        - NEVER use "would", "would be", "would show" — state what IS visible
+        - At least one question should ask about changes between images in the sequence
+        - Options should be plausible visual descriptions that could be confused
 
         Each question should have 4 options (A, B, C, and D) with only one correct answer.
 

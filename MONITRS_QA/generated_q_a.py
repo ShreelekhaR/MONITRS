@@ -147,32 +147,38 @@ def generate_image_paths(id_num: str) -> str:
 def query_q_a(events) -> List[str]:
 
     # prompt
-    prompt = f"""Given factual statements about a natural disaster, create 3 questions and answers.
+    prompt = f"""You are creating Visual Question Answering (VQA) pairs for satellite imagery of a natural disaster.
+        The questions must REQUIRE looking at the satellite images to answer — not just reading text.
+
+        Given these event descriptions for a sequence of satellite images, create 3 VQA pairs.
 
         RULES:
-        - Questions should ask about specific facts: damage, timeline, affected areas, impact on people
-        - Answers must state facts directly from the statements
-        - NEVER use "would", "would be", "would show", "would confirm", "would allow"
-        - Answers must be definitive: "The fire burned 365,850 acres" NOT "satellite imagery would show burning"
-        - If the statements describe a hurricane, ask about the hurricane — not generic vegetation
+        - Questions must reference what is VISIBLE in the images (colors, patterns, changes, features)
+        - Answers must describe visual evidence AND cite specific facts from the statements
+        - NEVER use "would", "would be", "would show" — state what IS visible
+        - Each question should be answerable by examining the satellite image sequence
+
+        Good VQA questions:
+        - "What visual change between the first and third image indicates fire damage?"
+        - "Describe the dark-colored region visible in the center of the image."
+        - "Based on the progression of images, when does the burn scar first appear?"
+        - "What evidence of flooding is visible in the later images?"
+        - "How has the landscape changed between the pre-event and post-event images?"
+
+        Bad questions (don't need images):
+        - "What was the name of the fire?" (text-only)
+        - "How many homes were evacuated?" (text-only)
+        - "What county was affected?" (text-only)
 
         Statements: \n{events}
 
-        Format your response exactly like this:
-        **Question 1:** [Your first question here]
-        **Answer 1:** [Your first answer as a complete, factual sentence]
-        **Question 2:** [Your second question here]
-        **Answer 2:** [Your second answer as a complete, factual sentence]
-        **Question 3:** [Your third question here]
-        **Answer 3:** [Your third answer as a complete, factual sentence]
-
-        Examples:
-        **Question 1:** How many acres were burned in Russell and Ellis Counties, Kansas?
-        **Answer 1:** Approximately 365,850 acres were burned in Russell and Ellis Counties, Kansas, destroying at least 10 homes.
-        **Question 2:** When did the wildfires in Kansas begin?
-        **Answer 2:** The wildfires began on December 15, 2021, driven by very strong winds gusting up to 100 mph.
-        **Question 3:** What was the primary cause of the rapid fire spread?
-        **Answer 3:** Strong winds, gusting up to 100 mph, were the primary cause of the rapid wildfire spread across western Kansas, Oklahoma, and Texas.
+        Format:
+        **Question 1:** [Visual question requiring image analysis]
+        **Answer 1:** [Answer citing visual evidence + factual details]
+        **Question 2:** [Visual question requiring image analysis]
+        **Answer 2:** [Answer citing visual evidence + factual details]
+        **Question 3:** [Visual question requiring image analysis]
+        **Answer 3:** [Answer citing visual evidence + factual details]
         """
     try:
         summary = client.models.generate_content(model=MODEL, contents=prompt)
