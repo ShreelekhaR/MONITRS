@@ -8,8 +8,8 @@ tiny = False
 # for tiny uncomment the following line
 # tiny = True
 
-train_jsons = [ "train_multiple_choice.json", "train_generated_q_a.json", "train_generated_multiple_choice_q_a.json"]
-test_jsons = [ "test_multiple_choice.json", "test_generated_q_a.json", "test_generated_multiple_choice_q_a.json"]
+train_jsons = ["new_train_multiple_choice.json", "train_generated_q_a.json", "train_generated_multiple_choice_q_a.json"]
+test_jsons = ["new_test_multiple_choice.json", "test_generated_q_a.json", "test_generated_multiple_choice_q_a.json"]
 
 # merge available jsons for train and test respectively
 
@@ -26,8 +26,12 @@ def merge_jsons(jsons):
     merged_data = []
     
     for json_file in jsons:
+        if not os.path.exists(json_file):
+            print(f"  Skipping {json_file} (not found)")
+            continue
         with open(json_file, "r") as f:
             data = json.load(f)
+            print(f"  {json_file}: {len(data)} questions")
             merged_data.extend(data)
     
     
