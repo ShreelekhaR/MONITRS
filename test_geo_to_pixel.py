@@ -1,10 +1,11 @@
 """
-Test and visualize geo_to_pixel by comparing satellite image with OSM map
-at the same location, with location pins overlaid on both.
+Visualize geocoded article locations on satellite imagery.
+Geocodes each location from the event, converts to pixel coordinates,
+and plots on the satellite image.
 
 Usage:
-    python test_geo_to_pixel.py
     python test_geo_to_pixel.py --event 0
+    python test_geo_to_pixel.py --n 3
 """
 
 import os
@@ -12,208 +13,214 @@ import re
 import json
 import argparse
 import math
-import urllib.request
+import requests
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import numpy as np
-from PIL import Image as PILImage
+from time import sleep
 
 RESULTS_FILE = 'Data/events_processed.json'
 ODIR = 'Data/images'
 OUT_DIR = 'Data/visualizations'
+GEOCODE_API_KEY = os.environ.get('GEOCODE_API_KEY', '')
+
+STATE_NAMES = {
+    'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
+    'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
+    'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
+    'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
+    'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
+    'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
+    'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
+    'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
+    'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
+    'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island', 'SC': 'South Carolina',
+    'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
+    'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
+    'WI': 'Wisconsin', 'WY': 'Wyoming', 'PR': 'Puerto Rico',
+}
 
 
-def geo_to_pixel_correct(locations, center):
-    """Correct geo_to_pixel using Sentinel-2 GSD (10m/px at 512x512)."""
-    height = 512
-    width = 512
+def geocode(loc_name, state=''):
+    if not GEOCODE_API_KEY:
+        return None, None
+    state_full = STATE_NAMES.get(state, state)
+    query = f"{loc_name}, {state_full}" if state_full else loc_name
+    try:
+        resp = requests.get(
+            f'https://geocode.maps.co/search?q={query}&api_key={GEOCODE_API_KEY}',
+            timeout=10)
+        data = resp.json()
+        if data:
+            for r in data:
+                if state_full.lower() in r.get('display_name', '').lower():
+                    return float(r['lat']), float(r['lon'])
+            if 'United States' in data[0].get('display_name', ''):
+                return float(data[0]['lat']), float(data[0]['lon'])
+    except Exception:
+        pass
+    return None, None
+
+
+def geo_to_pixel(lat, lon, center, halfwidth=0.05):
     gsd_meters = 10.0
-    center_lat, center_lon = center
-
     meters_per_degree_lat = 111320.0
-    meters_per_degree_lon = 111320.0 * math.cos(math.radians(center_lat))
-
-    pixel_locations = {}
-    for loc_name, coords in locations.items():
-        lat, lon = coords
-        x_meters = (lon - center_lon) * meters_per_degree_lon
-        y_meters = (lat - center_lat) * meters_per_degree_lat
-        x_pixel = int((x_meters / gsd_meters) + width / 2)
-        y_pixel = int((-y_meters / gsd_meters) + height / 2)
-        pixel_locations[loc_name] = (x_pixel, y_pixel)
-    return pixel_locations
-
-
-def geo_to_pixel_old(locations, center):
-    """Old (incorrect) geo_to_pixel from templated_mcq.py."""
-    height = 512
-    width = 512
-    center_lat, center_lon = center
-
-    pixel_locations = {}
-    for loc_name, coords in locations.items():
-        lat, lon = coords
-        x_offset = int((lon - center_lon) * (width / 360.0) + width / 2)
-        y_offset = int((lat - center_lat) * (height / 180.0) + height / 2)
-        pixel_locations[loc_name] = (x_offset, y_offset)
-    return pixel_locations
-
-
-def get_osm_tile(center, halfwidth=0.05, size=512):
-    """Download an OSM static map image for comparison."""
-    lat, lon = center
-    bbox = f"{lon-halfwidth},{lat-halfwidth},{lon+halfwidth},{lat+halfwidth}"
-    url = (f"https://render.openstreetmap.org/cgi-bin/export?"
-           f"bbox={bbox}&scale=5000&format=png")
-
-    # Alternative: use a static tile approach
-    zoom = 12
-    url = (f"https://static-maps.yandex.ru/v1?"
-           f"ll={lon},{lat}&z={zoom}&size=512,512&l=map")
-
-    # Simpler: use OSM tile server directly
-    # Calculate tile coordinates
-    n = 2 ** zoom
-    xtile = int((lon + 180) / 360 * n)
-    ytile = int((1 - math.log(math.tan(math.radians(lat)) + 1/math.cos(math.radians(lat))) / math.pi) / 2 * n)
-
-    # Download 3x3 grid of tiles and crop to center
-    tile_size = 256
-    tiles = np.zeros((tile_size * 3, tile_size * 3, 3), dtype=np.uint8)
-
-    for dx in range(-1, 2):
-        for dy in range(-1, 2):
-            tile_url = f"https://tile.openstreetmap.org/{zoom}/{xtile+dx}/{ytile+dy}.png"
-            tmp_file = f'/tmp/osm_tile_{zoom}_{xtile+dx}_{ytile+dy}.png'
-            try:
-                if not os.path.exists(tmp_file):
-                    req = urllib.request.Request(tile_url, headers={'User-Agent': 'MONITRS/2.0'})
-                    urllib.request.urlretrieve(tile_url, tmp_file)
-                tile_img = np.array(PILImage.open(tmp_file).convert('RGB'))
-                ox = (dx + 1) * tile_size
-                oy = (dy + 1) * tile_size
-                tiles[oy:oy+tile_size, ox:ox+tile_size] = tile_img
-            except Exception:
-                continue
-
-    # Crop center 512x512
-    cy, cx = tile_size * 3 // 2, tile_size * 3 // 2
-    cropped = tiles[cy-size//2:cy+size//2, cx-size//2:cx+size//2]
-    return cropped
+    meters_per_degree_lon = 111320.0 * math.cos(math.radians(center[0]))
+    x_meters = (lon - center[1]) * meters_per_degree_lon
+    y_meters = (lat - center[0]) * meters_per_degree_lat
+    x_pixel = int((x_meters / gsd_meters) + 256)
+    y_pixel = int((-y_meters / gsd_meters) + 256)
+    return x_pixel, y_pixel
 
 
 def find_event_image(event_idx):
-    """Find the first during-event image for an event."""
     for suffix in ['', '_firms', '_llm', '_fema']:
         img_dir = os.path.join(ODIR, f"{event_idx}{suffix}")
         if os.path.isdir(img_dir):
             for fname in sorted(os.listdir(img_dir)):
-                if ('during' in fname or 'event' in fname) and (fname.endswith('.png') or fname.endswith('.jpg')):
-                    return os.path.join(img_dir, fname)
-                # Also match caption-date images (no phase prefix)
-                if re.match(r'\d+_\d{4}-\d{2}-\d{2}\.png', fname):
-                    return os.path.join(img_dir, fname)
+                if fname.endswith('.png') or fname.endswith('.jpg'):
+                    if 'during' in fname or 'event' in fname or re.match(r'\d+_\d{4}', fname):
+                        return os.path.join(img_dir, fname)
     return None
 
 
-def create_comparison(event_idx, event_data):
+def create_viz(event_idx, event_data):
     center = event_data['center']
     halfwidth = event_data.get('halfwidth', 0.05)
+    state = event_data.get('state', '')
 
-    # Get satellite image
-    sat_path = find_event_image(event_idx)
-    if not sat_path:
-        print(f"  No satellite image found for event {event_idx}")
+    img_path = find_event_image(event_idx)
+    if not img_path:
         return None
 
-    # Build locations from location_events
-    locations = {}
-    for le in event_data.get('location_events', []):
-        loc = le.get('location', '')
-        if loc and loc not in locations:
-            locations[loc] = (center[0], center[1])
+    # Get unique location names
+    loc_names = list(set(
+        le.get('location', '') for le in event_data.get('location_events', [])
+        if le.get('location')
+    ))
 
-    # Also add FEMA center and chosen center as reference points
-    ref_points = {
-        'FEMA center': tuple(event_data.get('fema_center', center)),
-        'Chosen center': tuple(center),
-    }
+    # Geocode each
+    geocoded = {}
+    for loc in loc_names:
+        lat, lon = geocode(loc, state)
+        if lat is not None:
+            dist_km = math.sqrt((lat - center[0])**2 + (lon - center[1])**2) * 111
+            geocoded[loc] = {'lat': lat, 'lon': lon, 'dist_km': dist_km}
+            sleep(1.1)
 
-    # Compute pixel positions with both methods
-    pixels_correct = geo_to_pixel_correct(ref_points, center)
-    pixels_old = geo_to_pixel_old(ref_points, center)
+    # Plot
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
 
-    # Add some test points at known offsets
-    test_points = {}
-    lat, lon = center
-    meters_per_deg_lon = 111320 * math.cos(math.radians(lat))
-    offsets_km = [1, 2, 3]
-    for km in offsets_km:
-        test_points[f'{km}km E'] = (lat, lon + km * 1000 / meters_per_deg_lon)
-        test_points[f'{km}km N'] = (lat + km * 1000 / 111320, lon)
+    sat_img = mpimg.imread(img_path)
 
-    test_px_correct = geo_to_pixel_correct(test_points, center)
-    test_px_old = geo_to_pixel_old(test_points, center)
-
-    # Create figure
-    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
-
-    # Left: satellite image with CORRECT geo_to_pixel
-    sat_img = mpimg.imread(sat_path)
+    # Left: satellite image with all geocoded points
     axes[0].imshow(sat_img)
-    axes[0].set_title(f'Sentinel-2 + correct geo_to_pixel\n(GSD-based, 10m/px)', fontsize=11)
+    axes[0].set_title('Geocoded locations on satellite image', fontsize=11)
 
-    for name, (px, py) in pixels_correct.items():
-        if 0 <= px < 512 and 0 <= py < 512:
-            color = 'yellow' if 'FEMA' in name else 'red'
-            axes[0].plot(px, py, 'o', color=color, markersize=8)
-            axes[0].annotate(name, (px, py), fontsize=7, color=color,
-                           xytext=(5, 5), textcoords='offset points')
+    # Plot center
+    cx, cy = geo_to_pixel(center[0], center[1], center, halfwidth)
+    axes[0].plot(cx, cy, '+', color='yellow', markersize=15, markeredgewidth=2)
+    axes[0].annotate('CENTER', (cx, cy), fontsize=7, color='yellow',
+                     xytext=(5, -15), textcoords='offset points', fontweight='bold')
 
-    for name, (px, py) in test_px_correct.items():
-        if 0 <= px < 512 and 0 <= py < 512:
-            axes[0].plot(px, py, 'x', color='cyan', markersize=6)
-            axes[0].annotate(name, (px, py), fontsize=6, color='cyan',
-                           xytext=(3, 3), textcoords='offset points')
+    # Plot FEMA center
+    fema = event_data.get('fema_center', center)
+    fx, fy = geo_to_pixel(fema[0], fema[1], center, halfwidth)
+    if 0 <= fx < 512 and 0 <= fy < 512:
+        axes[0].plot(fx, fy, 's', color='yellow', markersize=8, markerfacecolor='none', markeredgewidth=2)
+        axes[0].annotate('FEMA', (fx, fy), fontsize=7, color='yellow',
+                         xytext=(5, 5), textcoords='offset points')
 
-    # Right: satellite image with OLD geo_to_pixel
-    axes[1].imshow(sat_img)
-    axes[1].set_title(f'Sentinel-2 + OLD geo_to_pixel\n(360°/180° projection — WRONG)', fontsize=11)
+    colors_inside = {'visual': '#FF4444', 'contextual': '#4488FF'}
+    colors_outside = '#888888'
 
-    for name, (px, py) in pixels_old.items():
-        if 0 <= px < 512 and 0 <= py < 512:
-            color = 'yellow' if 'FEMA' in name else 'red'
-            axes[1].plot(px, py, 'o', color=color, markersize=8)
-            axes[1].annotate(name, (px, py), fontsize=7, color=color,
-                           xytext=(5, 5), textcoords='offset points')
+    for loc, data in geocoded.items():
+        px, py = geo_to_pixel(data['lat'], data['lon'], center, halfwidth)
+        inside = 0 <= px < 512 and 0 <= py < 512
 
-    for name, (px, py) in test_px_old.items():
-        if 0 <= px < 512 and 0 <= py < 512:
-            axes[1].plot(px, py, 'x', color='cyan', markersize=6)
-            axes[1].annotate(name, (px, py), fontsize=6, color='cyan',
-                           xytext=(3, 3), textcoords='offset points')
+        # Get type from location_events
+        loc_type = 'visual'
+        for le in event_data.get('location_events', []):
+            if le.get('location') == loc:
+                loc_type = le.get('type', 'visual')
+                break
+
+        if inside:
+            color = colors_inside.get(loc_type, '#FF4444')
+            axes[0].plot(px, py, 'o', color=color, markersize=7, markeredgewidth=1.5, markerfacecolor='none')
+            axes[0].annotate(loc[:20], (px, py), fontsize=6, color=color,
+                             xytext=(5, 5), textcoords='offset points')
+
+    axes[0].set_xlim(0, 512)
+    axes[0].set_ylim(512, 0)
+
+    # Right: zoomed out view showing all points including outside bbox
+    axes[1].imshow(sat_img, extent=[-halfwidth, halfwidth, -halfwidth, halfwidth])
+    axes[1].set_title('All geocoded locations (zoomed out)', fontsize=11)
+
+    # Compute extent to show all points
+    all_lats = [center[0]] + [d['lat'] for d in geocoded.values()]
+    all_lons = [center[1]] + [d['lon'] for d in geocoded.values()]
+    lat_range = max(all_lats) - min(all_lats)
+    lon_range = max(all_lons) - min(all_lons)
+    extent = max(lat_range, lon_range, halfwidth * 2) * 1.2
+
+    axes[1].set_xlim(-extent/2, extent/2)
+    axes[1].set_ylim(-extent/2, extent/2)
+
+    # Plot all points relative to center
+    for loc, data in geocoded.items():
+        dx = data['lon'] - center[1]
+        dy = data['lat'] - center[0]
+        inside = abs(dx) <= halfwidth and abs(dy) <= halfwidth
+
+        loc_type = 'visual'
+        for le in event_data.get('location_events', []):
+            if le.get('location') == loc:
+                loc_type = le.get('type', 'visual')
+                break
+
+        color = colors_inside.get(loc_type, '#FF4444') if inside else colors_outside
+        marker = 'o' if inside else 'x'
+        axes[1].plot(dx, dy, marker, color=color, markersize=8)
+        axes[1].annotate(f"{loc[:15]} ({data['dist_km']:.0f}km)", (dx, dy),
+                         fontsize=6, color=color, xytext=(3, 3), textcoords='offset points')
+
+    # Draw bbox
+    rect = plt.Rectangle((-halfwidth, -halfwidth), halfwidth*2, halfwidth*2,
+                          linewidth=2, edgecolor='white', facecolor='none', linestyle='--')
+    axes[1].add_patch(rect)
+    axes[1].plot(0, 0, '+', color='yellow', markersize=12, markeredgewidth=2)
+    axes[1].set_xlabel('Longitude offset (degrees)')
+    axes[1].set_ylabel('Latitude offset (degrees)')
 
     event_name = event_data.get('event', '?')
-    fig.suptitle(f"{event_name}\nCenter: ({center[0]:.4f}, {center[1]:.4f}) | halfwidth: {halfwidth}°",
+    strategy = event_data.get('strategy', '?')
+    n_inside = sum(1 for d in geocoded.values()
+                   if abs(d['lon'] - center[1]) <= halfwidth and abs(d['lat'] - center[0]) <= halfwidth)
+    fig.suptitle(f"{event_name}\n{strategy} center | {len(geocoded)} geocoded, {n_inside} inside bbox",
                  fontsize=13, fontweight='bold')
 
-    # Print comparison
-    print(f"\n  Pixel comparison for reference points:")
-    print(f"  {'Point':<20} {'Correct (GSD)':>15} {'Old (360/180)':>15} {'Difference':>12}")
-    print(f"  {'-'*65}")
-    for name in ref_points:
-        cx, cy = pixels_correct[name]
-        ox, oy = pixels_old[name]
-        diff = math.sqrt((cx-ox)**2 + (cy-oy)**2)
-        print(f"  {name:<20} ({cx:>3}, {cy:>3})      ({ox:>3}, {oy:>3})      {diff:>8.1f} px")
-
-    print(f"\n  Test points (should be evenly spaced):")
-    for name in test_points:
-        cx, cy = test_px_correct[name]
-        ox, oy = test_px_old[name]
-        print(f"  {name:<20} correct=({cx:>4}, {cy:>4})  old=({ox:>4}, {oy:>4})")
+    # Legend
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='none', markeredgecolor='#FF4444', markersize=8, label='Visual (inside)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='none', markeredgecolor='#4488FF', markersize=8, label='Contextual (inside)'),
+        Line2D([0], [0], marker='x', color='#888888', markersize=8, label='Outside bbox', linestyle='None'),
+        Line2D([0], [0], marker='+', color='yellow', markersize=10, label='Center', linestyle='None'),
+        Line2D([0], [0], marker='s', color='yellow', markerfacecolor='none', markersize=8, label='FEMA center', linestyle='None'),
+    ]
+    axes[1].legend(handles=legend_elements, loc='lower right', fontsize=7)
 
     plt.tight_layout()
+
+    # Print summary
+    print(f"  Geocoded {len(geocoded)}/{len(loc_names)} locations:")
+    for loc, data in sorted(geocoded.items(), key=lambda x: x[1]['dist_km']):
+        inside = abs(data['lon'] - center[1]) <= halfwidth and abs(data['lat'] - center[0]) <= halfwidth
+        tag = "IN" if inside else "OUT"
+        print(f"    [{tag}] {loc}: ({data['lat']:.4f}, {data['lon']:.4f}) — {data['dist_km']:.1f}km")
+
     return fig
 
 
@@ -235,25 +242,18 @@ def main():
     if args.event is not None:
         event_ids = [str(args.event)]
     else:
-        # Pick events with images
-        candidates = []
-        for eid, data in results.items():
-            if 'error' in data:
-                continue
-            if find_event_image(eid):
-                candidates.append(eid)
+        candidates = [eid for eid, d in results.items()
+                      if 'error' not in d and find_event_image(eid)]
         event_ids = candidates[:args.n]
 
-    for eid in event_ids:
-        if eid not in results:
-            print(f"Event {eid}: not found")
-            continue
-        data = results[eid]
-        if 'error' in data:
-            continue
+    if not GEOCODE_API_KEY:
+        print("Warning: GEOCODE_API_KEY not set. Set it to geocode locations.")
 
-        print(f"\nEvent {eid}: {data.get('event', '?')}")
-        fig = create_comparison(eid, data)
+    for eid in event_ids:
+        if eid not in results or 'error' in results[eid]:
+            continue
+        print(f"\nEvent {eid}: {results[eid].get('event', '?')}")
+        fig = create_viz(eid, results[eid])
         if fig:
             out_path = os.path.join(OUT_DIR, f'geo_to_pixel_{eid}.png')
             fig.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
