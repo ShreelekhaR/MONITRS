@@ -311,10 +311,17 @@ def create_training_example(task_type: "custom", question_id_base: int,
         return examples, question_id_base
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--limit', type=int, default=None, help='Max events to process')
+    args = parser.parse_args()
+
     from load_v2 import load_all_v1_format, get_image_paths
 
     all_events = load_all_v1_format()
     event_ids = sorted(all_events.keys(), key=int)
+    if args.limit:
+        event_ids = event_ids[:args.limit]
     print(f"Loaded {len(event_ids)} events")
 
     split = int(len(event_ids) * 0.8)
