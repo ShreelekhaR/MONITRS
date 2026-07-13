@@ -148,18 +148,43 @@ def query_multiple_choice_q_a(events) -> List[str]:
     """Generate multiple choice questions and answers using Gemini."""
     # prompt
     prompt = f"""You are creating Visual Question Answering (VQA) multiple choice questions for satellite imagery
-        of a natural disaster. Questions must REQUIRE looking at the images to answer.
+        of a natural disaster. Questions must REQUIRE looking at the images. Answers must describe what IS visible.
 
         RULES:
-        - Questions must reference what is VISIBLE in the images (colors, patterns, changes, features)
-        - All options must describe visual observations, not text-only facts
-        - NEVER use "would", "would be", "would show" — state what IS visible
-        - At least one question should ask about changes between images in the sequence
-        - Options should be plausible visual descriptions that could be confused
+        - Questions ask about visible features: colors, shapes, patterns, changes between dates
+        - Options describe direct observations, not speculation
+        - NEVER use: "would", "could", "can be used to", "can be analyzed"
+        - At least one question about changes between images in the sequence
+        - Options should be plausible visual descriptions
 
         Each question should have 4 options (A, B, C, and D) with only one correct answer.
 
         Statements: \n{events}
+
+        Here are examples of GOOD VQA multiple choice:
+
+        **Question 1:** What is the most prominent visual change between the pre-event and post-event images?
+        A) A large dark burn scar covering the northeast quadrant of the image
+        B) Increased green vegetation across all agricultural fields
+        C) New urban development visible in the southwest corner
+        D) Snowfall covering the entire landscape
+        **Correct Answer 1:** A
+
+        **Question 2:** What does the dark linear feature visible in the September 18 image represent?
+        A) A newly constructed highway cutting through farmland
+        B) A tornado damage track with stripped vegetation and debris
+        C) A river that has changed course due to flooding
+        D) Cloud shadows cast across the landscape
+        **Correct Answer 2:** B
+
+        **Question 3:** How has the river appearance changed between the August 29 and September 3 images?
+        A) The river has dried up completely
+        B) The river channel has widened and standing water covers adjacent farmland
+        C) The river has frozen over with visible ice
+        D) The river color has changed from blue to green due to algae
+        **Correct Answer 3:** B
+
+        Now create 3 VQA multiple choice questions for the given statements:
         
         Format your response exactly like this:
         **Question 1:** [Your first question here]

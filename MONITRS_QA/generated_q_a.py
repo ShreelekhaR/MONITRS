@@ -148,37 +148,39 @@ def query_q_a(events) -> List[str]:
 
     # prompt
     prompt = f"""You are creating Visual Question Answering (VQA) pairs for satellite imagery of a natural disaster.
-        The questions must REQUIRE looking at the satellite images to answer — not just reading text.
-
-        Given these event descriptions for a sequence of satellite images, create 3 VQA pairs.
+        Questions must REQUIRE looking at satellite images. Answers must describe what IS visible — never speculate.
 
         RULES:
-        - Questions must reference what is VISIBLE in the images (colors, patterns, changes, features)
-        - Answers must describe visual evidence AND cite specific facts from the statements
-        - NEVER use "would", "would be", "would show" — state what IS visible
-        - Each question should be answerable by examining the satellite image sequence
-
-        Good VQA questions:
-        - "What visual change between the first and third image indicates fire damage?"
-        - "Describe the dark-colored region visible in the center of the image."
-        - "Based on the progression of images, when does the burn scar first appear?"
-        - "What evidence of flooding is visible in the later images?"
-        - "How has the landscape changed between the pre-event and post-event images?"
-
-        Bad questions (don't need images):
-        - "What was the name of the fire?" (text-only)
-        - "How many homes were evacuated?" (text-only)
-        - "What county was affected?" (text-only)
+        - Questions ask about visible features: colors, shapes, patterns, changes between dates
+        - Answers state direct observations: "A dark burn scar covers the northeast quadrant"
+        - NEVER use: "would", "could", "can be used to", "can be analyzed", "allows for"
+        - Answers combine visual description WITH factual details from the statements
+        - Keep answers 1-3 sentences, factual and specific
 
         Statements: \n{events}
 
-        Format:
-        **Question 1:** [Visual question requiring image analysis]
-        **Answer 1:** [Answer citing visual evidence + factual details]
-        **Question 2:** [Visual question requiring image analysis]
-        **Answer 2:** [Answer citing visual evidence + factual details]
-        **Question 3:** [Visual question requiring image analysis]
-        **Answer 3:** [Answer citing visual evidence + factual details]
+        Here are examples of GOOD VQA pairs:
+
+        **Question 1:** What visual change is visible between the pre-event image and the image from December 16?
+        **Answer 1:** A large, dark burn scar covering approximately 365,850 acres appears across the grassland, replacing the previously uniform brown-green terrain. At least 10 structures are no longer visible in the affected area.
+
+        **Question 2:** Describe the dark-colored region visible in the center of the September 3rd image.
+        **Answer 2:** The dark region is a burn scar from the Road 702 Fire, extending approximately 15 km along the Republican River. The scar contrasts sharply with the surrounding green agricultural fields.
+
+        **Question 3:** How does the flooding extent change between the August 27 and September 1 images?
+        **Answer 3:** Standing water is visible across approximately 3 square miles of low-lying farmland in the September 1 image, up from scattered pools on August 27. The river channel has visibly widened beyond its normal banks.
+
+        **Question 4:** What evidence of storm damage is visible in the post-event image compared to the pre-event baseline?
+        **Answer 4:** A linear debris path approximately 2 miles long cuts through agricultural fields northwest of town, with stripped vegetation and scattered bright spots indicating structural debris. The surrounding fields remain intact.
+
+        Now create 3 VQA pairs for the given statements:
+
+        **Question 1:** [Visual question]
+        **Answer 1:** [Direct observation + facts]
+        **Question 2:** [Visual question]
+        **Answer 2:** [Direct observation + facts]
+        **Question 3:** [Visual question]
+        **Answer 3:** [Direct observation + facts]
         """
     try:
         summary = client.models.generate_content(model=MODEL, contents=prompt)
