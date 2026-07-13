@@ -144,33 +144,28 @@ def generate_image_paths(id_num: str) -> str:
        
         return image_paths
 
-def query_q_a(events, captions='') -> List[str]:
-
-    caption_section = ""
-    if captions:
-        caption_section = f"""
-        Factual captions from news articles (use these details in your answers):
-        {captions}
-        """
+def query_q_a(captions) -> List[str]:
 
     prompt = f"""You are creating training data for a satellite image VQA model.
 
-        You are given FACTUAL INFORMATION from news articles about a natural disaster.
-        Your job is to create question-answer pairs where:
-        - The QUESTION asks about something that should be visible in satellite imagery of this event
-        - The ANSWER states the FACTS from the articles as ground truth
+        Below are dated captions describing a natural disaster at a specific location.
+        These captions contain FACTS from news articles — acreage burned, structures damaged,
+        roads affected, flood extent, etc.
 
-        CRITICAL: You are NOT analyzing satellite images. You are converting article facts into
-        Q&A format. The answers ARE the article facts — state them as ground truth.
+        Create 3 question-answer pairs where:
+        - The QUESTION asks about something described in the captions
+        - The ANSWER restates the facts from the captions as ground truth
 
-        NEVER say: "no visible signs", "imagery shows no evidence", "no indication of",
-        "can be determined", "can be analyzed", "would show"
+        You are NOT looking at any images. You are turning caption facts into Q&A pairs.
+        The trained model will learn to answer these questions by looking at satellite images.
 
-        If the articles say a hurricane caused flooding, the answer IS "flooding from the hurricane
-        covers low-lying areas" — even if you personally can't see it in an image.
+        NEVER say: "satellite imagery shows", "can be determined", "can be analyzed",
+        "can map", "can detect", "would show", "no visible signs"
 
-        Event descriptions: \n{events}
-        {caption_section}
+        Just state the facts. If the caption says "fire burned 6,735 acres" then the
+        answer is "The fire burned 6,735 acres."
+
+        Captions:\n{captions}
 
         Examples:
 
@@ -260,9 +255,9 @@ def create_training_example(task_type: "custom", question_id_base: int,
         # print(events)
         # exit(0)
 
-        # Include captions for richer context
         captions = event_data.get('captions', '')
-        qa = query_q_a(events, captions)
+        # Use captions as primary input — they have the specific facts
+        qa = query_q_a(captions)
 
         if not qa or qa == 'no' or qa == '':
             return None

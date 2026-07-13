@@ -144,31 +144,25 @@ def generate_image_paths(id_num: str) -> str:
        
         return image_paths
 
-def query_multiple_choice_q_a(events, captions='') -> List[str]:
+def query_multiple_choice_q_a(captions) -> List[str]:
     """Generate multiple choice questions and answers using Gemini."""
-
-    caption_section = ""
-    if captions:
-        caption_section = f"""
-        Factual captions from news articles (use these details in options and answers):
-        {captions}
-        """
 
     prompt = f"""You are creating training data for a satellite image VQA model.
 
-        You are given FACTUAL INFORMATION from news articles about a natural disaster.
-        Create multiple choice questions where:
-        - The QUESTION asks about something visible in satellite imagery of this event
-        - The CORRECT OPTION states facts from the articles as ground truth
+        Below are dated captions describing a natural disaster. These contain FACTS from
+        news articles. Create 3 multiple choice questions where:
+        - The QUESTION asks about something described in the captions
+        - The CORRECT OPTION restates facts from the captions
         - The WRONG OPTIONS are plausible but factually incorrect
 
-        CRITICAL: You are NOT analyzing images. The correct answers ARE the article facts.
-        NEVER say: "no visible signs", "can be determined", "can be analyzed", "would show"
+        You are NOT looking at any images. Just turn caption facts into MCQ format.
+
+        NEVER say: "satellite imagery shows", "can be determined", "can be analyzed",
+        "can map", "can detect", "would show", "no visible signs"
 
         Each question should have 4 options (A, B, C, and D) with only one correct answer.
 
-        Event descriptions: \n{events}
-        {caption_section}
+        Captions:\n{captions}
 
         Examples:
 
@@ -359,7 +353,7 @@ def create_training_example(task_type: str, question_id_base: int,
 
     # Generate multiple choice questions and answers using gemini
     captions = event_data.get('captions', '')
-    qa_text = query_multiple_choice_q_a(events, captions)
+    qa_text = query_multiple_choice_q_a(captions)
 
     if not qa_text or qa_text == 'no' or qa_text == '':
         return None
