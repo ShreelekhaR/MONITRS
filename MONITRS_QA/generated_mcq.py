@@ -144,22 +144,30 @@ def generate_image_paths(id_num: str) -> str:
        
         return image_paths
 
-def query_multiple_choice_q_a(events) -> List[str]:
+def query_multiple_choice_q_a(events, captions='') -> List[str]:
     """Generate multiple choice questions and answers using Gemini."""
-    # prompt
+
+    caption_section = ""
+    if captions:
+        caption_section = f"""
+        Factual captions from news articles (use these details in options and answers):
+        {captions}
+        """
+
     prompt = f"""You are creating Visual Question Answering (VQA) multiple choice questions for satellite imagery
-        of a natural disaster. Questions must REQUIRE looking at the images. Answers must describe what IS visible.
+        of a natural disaster. Questions must REQUIRE looking at the images. Answers must cite specific facts.
 
         RULES:
         - Questions ask about visible features: colors, shapes, patterns, changes between dates
-        - Options describe direct observations, not speculation
-        - NEVER use: "would", "could", "can be used to", "can be analyzed"
+        - Options must include specific facts: acreage, road names, structure counts, percentages
+        - NEVER use: "would", "could", "can be used to", "can be analyzed", "can be determined"
         - At least one question about changes between images in the sequence
-        - Options should be plausible visual descriptions
+        - Wrong options should be plausible but factually incorrect
 
         Each question should have 4 options (A, B, C, and D) with only one correct answer.
 
-        Statements: \n{events}
+        Event descriptions: \n{events}
+        {caption_section}
 
         Here are examples of GOOD VQA multiple choice:
 
@@ -349,7 +357,8 @@ def create_training_example(task_type: str, question_id_base: int,
         events[order] = description
 
     # Generate multiple choice questions and answers using gemini
-    qa_text = query_multiple_choice_q_a(events)
+    captions = event_data.get('captions', '')
+    qa_text = query_multiple_choice_q_a(events, captions)
 
     if not qa_text or qa_text == 'no' or qa_text == '':
         return None

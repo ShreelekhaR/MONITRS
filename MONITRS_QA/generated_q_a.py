@@ -144,20 +144,27 @@ def generate_image_paths(id_num: str) -> str:
        
         return image_paths
 
-def query_q_a(events) -> List[str]:
+def query_q_a(events, captions='') -> List[str]:
 
-    # prompt
+    caption_section = ""
+    if captions:
+        caption_section = f"""
+        Factual captions from news articles (use these details in your answers):
+        {captions}
+        """
+
     prompt = f"""You are creating Visual Question Answering (VQA) pairs for satellite imagery of a natural disaster.
-        Questions must REQUIRE looking at satellite images. Answers must describe what IS visible — never speculate.
+        Questions must REQUIRE looking at satellite images. Answers must state specific facts.
 
         RULES:
         - Questions ask about visible features: colors, shapes, patterns, changes between dates
-        - Answers state direct observations: "A dark burn scar covers the northeast quadrant"
-        - NEVER use: "would", "could", "can be used to", "can be analyzed", "allows for"
-        - Answers combine visual description WITH factual details from the statements
-        - Keep answers 1-3 sentences, factual and specific
+        - Answers MUST cite specific facts: acreage, number of structures, road names, percentages
+        - Answers state what IS visible: "A dark burn scar covers 6,735 acres northeast of Glen Rose"
+        - NEVER use: "would", "could", "can be used to", "can be analyzed", "can be determined"
+        - Keep answers 1-3 sentences with concrete numbers and place names
 
-        Statements: \n{events}
+        Event descriptions: \n{events}
+        {caption_section}
 
         Here are examples of GOOD VQA pairs:
 
@@ -250,9 +257,9 @@ def create_training_example(task_type: "custom", question_id_base: int,
         # print(events)
         # exit(0)
 
-        # Generate questions and answers using gemini
-        # Generate questions and answers using gemini
-        qa = query_q_a(events)
+        # Include captions for richer context
+        captions = event_data.get('captions', '')
+        qa = query_q_a(events, captions)
 
         if not qa or qa == 'no' or qa == '':
             return None

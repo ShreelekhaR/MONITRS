@@ -97,6 +97,7 @@ def event_to_v1_format(event_id, event_data):
         'locations': locations,
         'events': sorted(events, key=lambda e: e['date']),
         'event_type': event_data.get('type', 'Unknown'),
+        'captions': event_data.get('captions', ''),
     }
 
 
