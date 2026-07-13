@@ -68,11 +68,9 @@ def event_to_v1_format(event_id, event_data):
     base_coords = (center[0], center[1])
 
     # Build locations dict from location_events
+    # Note: we don't have geocoded coordinates for individual locations,
+    # only the event center. Set locations empty to skip location_identification questions.
     locations = {}
-    for le in event_data.get('location_events', []):
-        loc_name = le.get('location', '')
-        if loc_name and loc_name not in locations:
-            locations[loc_name] = base_coords
 
     # Build events list from location_events
     events = []

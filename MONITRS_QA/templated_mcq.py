@@ -10,21 +10,24 @@ import pandas as pd
 
 # Reuse the existing geo_to_pixel function
 def geo_to_pixel(locations, center, radius=5):
-    """Convert geographical coordinates to pixel coordinates."""
+    """Convert geographical coordinates to pixel coordinates using Sentinel-2 GSD."""
+    import math
     height = 512
     width = 512
+    gsd_meters = 10.0
     center_lat, center_lon = center
 
-    pixel_locations = {}
+    meters_per_degree_lat = 111320.0
+    meters_per_degree_lon = 111320.0 * math.cos(math.radians(center_lat))
 
+    pixel_locations = {}
     for loc in locations:
         lat, lon = locations[loc]
-
-        # convert lat, lon to pixel coordinates
-        x_offset = int((lon - center_lon) * (width / 360.0) + width / 2)
-        y_offset = int((lat - center_lat) * (height / 180.0) + height / 2)
-
-        pixel_locations[loc] = (x_offset, y_offset)
+        x_meters = (lon - center_lon) * meters_per_degree_lon
+        y_meters = (lat - center_lat) * meters_per_degree_lat
+        x_pixel = int((x_meters / gsd_meters) + width / 2)
+        y_pixel = int((-y_meters / gsd_meters) + height / 2)
+        pixel_locations[loc] = (x_pixel, y_pixel)
     return pixel_locations
 
 
