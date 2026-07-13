@@ -377,8 +377,7 @@ def create_training_example(task_type: str, question_id_base: int,
         
         # Format the answer response
         correct_letter = qa['correct_answer']
-        correct_text = next((opt['text'] for opt in qa['options'] if opt['letter'] == correct_letter), "")
-        full_answer = f"The correct answer is {correct_letter}) {correct_text}"
+        full_answer = correct_letter.lower()
         
         examples.append({
             **base_example,
