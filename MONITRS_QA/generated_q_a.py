@@ -153,41 +153,44 @@ def query_q_a(events, captions='') -> List[str]:
         {captions}
         """
 
-    prompt = f"""You are creating Visual Question Answering (VQA) pairs for satellite imagery of a natural disaster.
-        Questions must REQUIRE looking at satellite images. Answers must state specific facts.
+    prompt = f"""You are creating training data for a satellite image VQA model.
 
-        RULES:
-        - Questions ask about visible features: colors, shapes, patterns, changes between dates
-        - Answers MUST cite specific facts: acreage, number of structures, road names, percentages
-        - Answers state what IS visible: "A dark burn scar covers 6,735 acres northeast of Glen Rose"
-        - NEVER use: "would", "could", "can be used to", "can be analyzed", "can be determined"
-        - Keep answers 1-3 sentences with concrete numbers and place names
+        You are given FACTUAL INFORMATION from news articles about a natural disaster.
+        Your job is to create question-answer pairs where:
+        - The QUESTION asks about something that should be visible in satellite imagery of this event
+        - The ANSWER states the FACTS from the articles as ground truth
+
+        CRITICAL: You are NOT analyzing satellite images. You are converting article facts into
+        Q&A format. The answers ARE the article facts — state them as ground truth.
+
+        NEVER say: "no visible signs", "imagery shows no evidence", "no indication of",
+        "can be determined", "can be analyzed", "would show"
+
+        If the articles say a hurricane caused flooding, the answer IS "flooding from the hurricane
+        covers low-lying areas" — even if you personally can't see it in an image.
 
         Event descriptions: \n{events}
         {caption_section}
 
-        Here are examples of GOOD VQA pairs:
+        Examples:
 
-        **Question 1:** What visual change is visible between the pre-event image and the image from December 16?
-        **Answer 1:** A large, dark burn scar covering approximately 365,850 acres appears across the grassland, replacing the previously uniform brown-green terrain. At least 10 structures are no longer visible in the affected area.
+        **Question 1:** What disaster event affected this area and what was its visible impact?
+        **Answer 1:** The Road 702 Fire burned 44,024 acres of grassland and agricultural fields. A large burn scar extends from the Kansas border north along the Republican River through Frontier County.
 
-        **Question 2:** Describe the dark-colored region visible in the center of the September 3rd image.
-        **Answer 2:** The dark region is a burn scar from the Road 702 Fire, extending approximately 15 km along the Republican River. The scar contrasts sharply with the surrounding green agricultural fields.
+        **Question 2:** How did the landscape change between the pre-event and post-event period?
+        **Answer 2:** Before the hurricane, the landscape showed typical green vegetation and intact structures. After Hurricane Matthew, flooding covered low-lying areas in Duplin County, with 1,500 homes damaged and major roads submerged.
 
-        **Question 3:** How does the flooding extent change between the August 27 and September 1 images?
-        **Answer 3:** Standing water is visible across approximately 3 square miles of low-lying farmland in the September 1 image, up from scattered pools on August 27. The river channel has visibly widened beyond its normal banks.
+        **Question 3:** What is visible in the area around FM205 after the fire?
+        **Answer 3:** The Chalk Mountain Fire burned 6,735 acres north of FM205 in Somervell County, destroying 16 homes and damaging 5 others. The burn scar is visible as darkened terrain contrasting with unburned areas south of the road.
 
-        **Question 4:** What evidence of storm damage is visible in the post-event image compared to the pre-event baseline?
-        **Answer 4:** A linear debris path approximately 2 miles long cuts through agricultural fields northwest of town, with stripped vegetation and scattered bright spots indicating structural debris. The surrounding fields remain intact.
+        Now create 3 VQA pairs using the facts provided:
 
-        Now create 3 VQA pairs for the given statements:
-
-        **Question 1:** [Visual question]
-        **Answer 1:** [Direct observation + facts]
-        **Question 2:** [Visual question]
-        **Answer 2:** [Direct observation + facts]
-        **Question 3:** [Visual question]
-        **Answer 3:** [Direct observation + facts]
+        **Question 1:** [Question about visible features/changes]
+        **Answer 1:** [Facts from articles stated as ground truth]
+        **Question 2:** [Question about visible features/changes]
+        **Answer 2:** [Facts from articles stated as ground truth]
+        **Question 3:** [Question about visible features/changes]
+        **Answer 3:** [Facts from articles stated as ground truth]
         """
     try:
         summary = client.models.generate_content(model=MODEL, contents=prompt)

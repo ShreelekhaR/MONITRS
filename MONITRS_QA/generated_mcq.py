@@ -154,45 +154,46 @@ def query_multiple_choice_q_a(events, captions='') -> List[str]:
         {captions}
         """
 
-    prompt = f"""You are creating Visual Question Answering (VQA) multiple choice questions for satellite imagery
-        of a natural disaster. Questions must REQUIRE looking at the images. Answers must cite specific facts.
+    prompt = f"""You are creating training data for a satellite image VQA model.
 
-        RULES:
-        - Questions ask about visible features: colors, shapes, patterns, changes between dates
-        - Options must include specific facts: acreage, road names, structure counts, percentages
-        - NEVER use: "would", "could", "can be used to", "can be analyzed", "can be determined"
-        - At least one question about changes between images in the sequence
-        - Wrong options should be plausible but factually incorrect
+        You are given FACTUAL INFORMATION from news articles about a natural disaster.
+        Create multiple choice questions where:
+        - The QUESTION asks about something visible in satellite imagery of this event
+        - The CORRECT OPTION states facts from the articles as ground truth
+        - The WRONG OPTIONS are plausible but factually incorrect
+
+        CRITICAL: You are NOT analyzing images. The correct answers ARE the article facts.
+        NEVER say: "no visible signs", "can be determined", "can be analyzed", "would show"
 
         Each question should have 4 options (A, B, C, and D) with only one correct answer.
 
         Event descriptions: \n{events}
         {caption_section}
 
-        Here are examples of GOOD VQA multiple choice:
+        Examples:
 
-        **Question 1:** What is the most prominent visual change between the pre-event and post-event images?
-        A) A large dark burn scar covering the northeast quadrant of the image
-        B) Increased green vegetation across all agricultural fields
-        C) New urban development visible in the southwest corner
-        D) Snowfall covering the entire landscape
+        **Question 1:** What is the extent of fire damage visible in this area?
+        A) A burn scar covering approximately 365,850 acres of grassland
+        B) A small contained fire affecting less than 100 acres
+        C) No fire damage — the area shows only agricultural activity
+        D) A burn scar limited to a single farm property
         **Correct Answer 1:** A
 
-        **Question 2:** What does the dark linear feature visible in the September 18 image represent?
-        A) A newly constructed highway cutting through farmland
-        B) A tornado damage track with stripped vegetation and debris
-        C) A river that has changed course due to flooding
-        D) Cloud shadows cast across the landscape
+        **Question 2:** What impact did Hurricane Matthew have on this area as seen in the post-storm images?
+        A) Minor wind damage to a few trees
+        B) Widespread flooding covering low-lying areas, with 1,500 homes damaged
+        C) Complete destruction of all structures in the county
+        D) No visible impact from the hurricane
         **Correct Answer 2:** B
 
-        **Question 3:** How has the river appearance changed between the August 29 and September 3 images?
-        A) The river has dried up completely
-        B) The river channel has widened and standing water covers adjacent farmland
-        C) The river has frozen over with visible ice
-        D) The river color has changed from blue to green due to algae
+        **Question 3:** How did the Chalk Mountain Fire progress between July 18 and July 28?
+        A) The fire was fully contained within the first day
+        B) The fire grew from initial ignition to 6,735 acres, crossing FM205 northward
+        C) The fire moved southward toward Glen Rose
+        D) The fire remained stationary at less than 500 acres
         **Correct Answer 3:** B
 
-        Now create 3 VQA multiple choice questions for the given statements:
+        Now create 3 multiple choice questions using the facts provided:
         
         Format your response exactly like this:
         **Question 1:** [Your first question here]
