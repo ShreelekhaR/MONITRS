@@ -30,9 +30,9 @@ def test_overpass(lat, lon, halfwidth=0.05):
     print(f"Querying OSM at ({lat:.4f}, {lon:.4f}), bbox={bbox}")
     print(f"Query length: {len(query)} chars")
 
-    resp = requests.post(
+    resp = requests.get(
         'https://overpass-api.de/api/interpreter',
-        data={'data': query},
+        params={'data': query},
         timeout=30
     )
 

@@ -41,7 +41,7 @@ def get_osm_features(center, halfwidth=0.05):
     """
 
     try:
-        resp = requests.post(OVERPASS_URL, data={'data': query}, timeout=30)
+        resp = requests.get(OVERPASS_URL, params={'data': query}, timeout=30)
         if resp.status_code != 200:
             return []
         data = resp.json()
