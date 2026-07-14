@@ -377,8 +377,8 @@ class MultipleChoiceGenerator:
         """Create a location identification multiple choice question."""
         locations = event_data['locations']
         events = event_data['events']
-        
-        if not locations or len(locations) < 2 or not events:
+
+        if not locations or not events:
             return None
             
         # Detect event type and description
