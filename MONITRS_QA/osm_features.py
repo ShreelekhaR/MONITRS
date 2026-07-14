@@ -26,14 +26,16 @@ def get_osm_features(center, halfwidth=0.05):
     query = f"""
     [out:json][timeout:30];
     (
-      way["highway"]["name"]({bbox});
-      way["waterway"]["name"]({bbox});
+      way["highway"]({bbox});
+      way["waterway"]({bbox});
       node["place"]({bbox});
-      way["natural"="water"]["name"]({bbox});
-      way["landuse"]["name"]({bbox});
-      node["amenity"]["name"]({bbox});
-      way["building"]["name"]({bbox});
+      way["natural"="water"]({bbox});
+      way["landuse"]({bbox});
+      node["amenity"]({bbox});
+      way["building"]({bbox});
       relation["boundary"="administrative"]["name"]({bbox});
+      way["railway"]({bbox});
+      way["power"="line"]({bbox});
     );
     out center;
     """
@@ -47,14 +49,31 @@ def get_osm_features(center, halfwidth=0.05):
         return []
 
     features = []
-    seen_names = set()
+    seen = set()
 
     for element in data.get('elements', []):
         tags = element.get('tags', {})
         name = tags.get('name', '')
-        if not name or name in seen_names:
+
+        # For unnamed features, use the type as label
+        if not name:
+            if 'highway' in tags:
+                name = tags.get('ref', tags['highway'] + ' road')
+            elif 'waterway' in tags:
+                name = tags['waterway']
+            elif 'landuse' in tags:
+                name = tags['landuse']
+            elif 'railway' in tags:
+                name = 'railway'
+            elif 'power' in tags:
+                name = 'power line'
+            else:
+                continue
+
+        key = (name, element.get('id', ''))
+        if key in seen:
             continue
-        seen_names.add(name)
+        seen.add(key)
 
         # Get coordinates
         if element['type'] == 'node':
