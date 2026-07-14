@@ -15,6 +15,7 @@ from time import sleep
 RESULTS_FILE = 'Data/events_processed.json'
 IMAGES_DIR = 'Data/images'
 GEOCODE_API_KEY = os.environ.get('GEOCODE_API_KEY', '')
+NOMINATIM_URL = os.environ.get('NOMINATIM_URL', 'http://nominatim.geocoder.internal:8080')
 GEOCODE_CACHE_FILE = 'Data/geocode_cache.json'
 
 STATE_NAMES = {
@@ -102,8 +103,6 @@ def _save_geocode_cache():
 
 
 def geocode_location(loc_name, state=''):
-    if not GEOCODE_API_KEY:
-        return None, None
     cache = _load_geocode_cache()
     cache_key = f"{loc_name}|{state}"
     if cache_key in cache:
@@ -111,12 +110,25 @@ def geocode_location(loc_name, state=''):
 
     state_full = STATE_NAMES.get(state, state)
     query = f"{loc_name}, {state_full}" if state_full else loc_name
-    try:
-        resp = requests.get(
-            f'https://geocode.maps.co/search?q={query}&api_key={GEOCODE_API_KEY}',
-            timeout=10)
-        data = resp.json()
-        if data:
+
+    # Try local Nominatim first (no rate limit), then geocode.maps.co
+    endpoints = [
+        (f'{NOMINATIM_URL}/search', {'q': query, 'format': 'json', 'limit': 5}),
+    ]
+    if GEOCODE_API_KEY:
+        endpoints.append(
+            (f'https://geocode.maps.co/search', {'q': query, 'api_key': GEOCODE_API_KEY})
+        )
+
+    for url, params in endpoints:
+        try:
+            resp = requests.get(url, params=params,
+                                headers={'User-Agent': 'MONITRS/2.0'}, timeout=10)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            if not data:
+                continue
             for r in data:
                 if state_full.lower() in r.get('display_name', '').lower():
                     result = (float(r['lat']), float(r['lon']))
@@ -126,8 +138,9 @@ def geocode_location(loc_name, state=''):
                 result = (float(data[0]['lat']), float(data[0]['lon']))
                 cache[cache_key] = result
                 return result
-    except Exception:
-        pass
+        except Exception:
+            continue
+
     cache[cache_key] = (None, None)
     return None, None
 
