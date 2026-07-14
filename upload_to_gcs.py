@@ -1,5 +1,6 @@
 """
 Upload MONITRS v2 dataset to GCS.
+Zips images per event for fast transfer, uploads metadata + QA as-is.
 
 Usage:
     python upload_to_gcs.py
@@ -9,40 +10,67 @@ Usage:
 import os
 import argparse
 import json
+import zipfile
+import tempfile
 from google.cloud import storage
-from tqdm import tqdm
-
-
-def upload_dir(bucket, local_dir, gcs_prefix, extensions=None):
-    """Upload a directory to GCS, skipping existing files."""
-    count = 0
-    skipped = 0
-    for root, dirs, files in os.walk(local_dir):
-        for fname in sorted(files):
-            if extensions and not any(fname.endswith(e) for e in extensions):
-                continue
-            local_path = os.path.join(root, fname)
-            rel_path = os.path.relpath(local_path, local_dir)
-            gcs_path = f"{gcs_prefix}/{rel_path}"
-
-            blob = bucket.blob(gcs_path)
-            if blob.exists():
-                skipped += 1
-                continue
-            blob.upload_from_filename(local_path)
-            count += 1
-
-            if (count + skipped) % 100 == 0:
-                print(f"  {count} uploaded, {skipped} skipped", flush=True)
-
-    return count, skipped
 
 
 def upload_file(bucket, local_path, gcs_path):
     blob = bucket.blob(gcs_path)
+    if blob.exists():
+        print(f"  [skip] {gcs_path}")
+        return
     blob.upload_from_filename(local_path)
     size_mb = os.path.getsize(local_path) / 1e6
-    print(f"  {gcs_path} ({size_mb:.1f} MB)")
+    print(f"  [ok] {gcs_path} ({size_mb:.1f} MB)")
+
+
+def zip_and_upload_images(bucket, prefix, chunk_size=1000):
+    """Zip images in chunks and upload to GCS."""
+    img_dir = 'Data/images'
+    if not os.path.isdir(img_dir):
+        print("  No images directory found")
+        return
+
+    event_dirs = sorted([d for d in os.listdir(img_dir)
+                         if os.path.isdir(os.path.join(img_dir, d))])
+
+    print(f"  {len(event_dirs)} event folders to zip")
+
+    for chunk_start in range(0, len(event_dirs), chunk_size):
+        chunk_end = min(chunk_start + chunk_size, len(event_dirs))
+        chunk_dirs = event_dirs[chunk_start:chunk_end]
+        zip_name = f"images_{chunk_start:05d}_{chunk_end:05d}.zip"
+        gcs_path = f"{prefix}/images/{zip_name}"
+
+        blob = bucket.blob(gcs_path)
+        if blob.exists():
+            print(f"  [skip] {zip_name} (already uploaded)")
+            continue
+
+        print(f"  Zipping events {chunk_start}-{chunk_end}...", end=' ', flush=True)
+
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        n_files = 0
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_STORED) as zf:
+            for event_dir in chunk_dirs:
+                full_dir = os.path.join(img_dir, event_dir)
+                for fname in sorted(os.listdir(full_dir)):
+                    if fname.endswith('.png') or fname.endswith('.jpg'):
+                        file_path = os.path.join(full_dir, fname)
+                        arc_name = f"{event_dir}/{fname}"
+                        zf.write(file_path, arc_name)
+                        n_files += 1
+
+        size_mb = os.path.getsize(tmp_path) / 1e6
+        print(f"{n_files} files, {size_mb:.0f} MB", flush=True)
+
+        print(f"  Uploading {zip_name}...", flush=True)
+        blob.upload_from_filename(tmp_path)
+        os.remove(tmp_path)
+        print(f"  [ok] {zip_name}")
 
 
 def main():
@@ -57,56 +85,34 @@ def main():
 
     print(f"Uploading to gs://{args.bucket}/{prefix}/\n")
 
-    # 1. Events processed (metadata + captions)
+    # 1. Events metadata
     print("1. Events metadata:")
-    for f in ['Data/events_processed.json', 'Data/events_processed_0_5000.json',
-              'Data/events_processed_5000_end.json']:
+    for f in ['Data/events_processed.json']:
         if os.path.exists(f):
             upload_file(bucket, f, f"{prefix}/{f}")
 
     # 2. QA data
     print("\n2. QA data:")
-    qa_files = [
-        'new_train_multiple_choice.json', 'new_test_multiple_choice.json',
-        'train_generated_q_a.json', 'test_generated_q_a.json',
-        'train_generated_multiple_choice_q_a.json', 'test_generated_multiple_choice_q_a.json',
-        'train_total.json', 'test_total.json',
-    ]
-    for f in qa_files:
+    for f in ['train_total.json', 'test_total.json',
+              'new_train_multiple_choice.json', 'new_test_multiple_choice.json',
+              'train_generated_q_a.json', 'test_generated_q_a.json',
+              'train_generated_multiple_choice_q_a.json', 'test_generated_multiple_choice_q_a.json']:
         if os.path.exists(f):
             upload_file(bucket, f, f"{prefix}/qa/{f}")
 
-    # 3. Geocode cache
-    if os.path.exists('Data/geocode_cache.json'):
-        print("\n3. Geocode cache:")
-        upload_file(bucket, 'Data/geocode_cache.json', f"{prefix}/Data/geocode_cache.json")
-
-    # 4. GeoParquet
-    if os.path.exists('Data/monitrs_v2.geoparquet'):
-        print("\n4. GeoParquet:")
-        upload_file(bucket, 'Data/monitrs_v2.geoparquet', f"{prefix}/Data/monitrs_v2.geoparquet")
-
-    # 5. Images (biggest upload)
-    print("\n5. Images:")
-    if os.path.isdir('Data/images'):
-        n_folders = len(os.listdir('Data/images'))
-        print(f"  {n_folders} event folders to upload...")
-        count, skipped = upload_dir(bucket, 'Data/images', f"{prefix}/Data/images",
-                                     extensions=['.png', '.jpg'])
-        print(f"  Done: {count} uploaded, {skipped} already existed")
-
-    # 6. FEMA data + articles
-    print("\n6. Source data:")
-    for f in ['Data/FEMA_filtered.csv', 'Data/articles.csv']:
+    # 3. Source data
+    print("\n3. Source data:")
+    for f in ['Data/FEMA_filtered.csv', 'Data/articles.csv',
+              'Data/geocode_cache.json', 'Data/monitrs_v2.geoparquet']:
         if os.path.exists(f):
             upload_file(bucket, f, f"{prefix}/{f}")
 
-    # Summary
+    # 4. Images (zipped)
+    print("\n4. Images (zipped):")
+    zip_and_upload_images(bucket, prefix)
+
     print(f"\n{'='*50}")
-    print(f"Upload complete to gs://{args.bucket}/{prefix}/")
-    print(f"  Events: Data/events_processed.json")
-    print(f"  QA: qa/*.json")
-    print(f"  Images: Data/images/")
+    print(f"Done! gs://{args.bucket}/{prefix}/")
 
 
 if __name__ == '__main__':
