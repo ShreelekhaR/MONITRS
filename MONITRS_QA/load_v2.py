@@ -226,13 +226,11 @@ def event_to_v1_format(event_id, event_data):
     center = event_data.get('center', event_data.get('fema_center', [0, 0]))
     base_coords = (center[0], center[1])
 
-    # OSM matching + geocoding only if env var set
+    # Geocode article locations and keep only those inside bbox
     halfwidth = event_data.get('halfwidth', 0.05)
     locations = {}
-    if os.environ.get('ENABLE_LOCATION_QA'):
-        locations = osm_match_locations(event_data, halfwidth)
-        if not locations and GEOCODE_API_KEY:
-            locations = geocode_event_locations(event_data, halfwidth)
+    if os.environ.get('ENABLE_LOCATION_QA') and GEOCODE_API_KEY:
+        locations = geocode_event_locations(event_data, halfwidth)
 
     # Build events list from location_events
     events = []
