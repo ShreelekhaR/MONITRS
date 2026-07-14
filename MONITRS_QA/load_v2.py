@@ -162,6 +162,11 @@ _osm_cache = {}
 
 def osm_match_locations(event_data, halfwidth=0.05):
     """Match article locations to OSM features inside the bbox."""
+    # Skip if no location names to match
+    loc_names = [le.get('location', '') for le in event_data.get('location_events', []) if le.get('location')]
+    if not loc_names:
+        return {}
+
     center = event_data.get('center', event_data.get('fema_center', [0, 0]))
     cache_key = f"{center[0]:.4f},{center[1]:.4f},{halfwidth}"
 
@@ -171,7 +176,7 @@ def osm_match_locations(event_data, halfwidth=0.05):
             osm_all = get_osm_features(center, halfwidth)
             osm_inside = osm_to_pixels(osm_all, center)
             _osm_cache[cache_key] = osm_inside
-            sleep(1.5)  # rate limit
+            sleep(2)  # rate limit for Overpass
         except Exception as e:
             _osm_cache[cache_key] = []
 
