@@ -27,21 +27,29 @@ def fuzzy_match(article_loc, osm_name):
     if a == o:
         return True
 
-    # One contains the other
-    if a in o or o in a:
+    # One fully contains the other (not single words)
+    if len(a) > 3 and a in o:
+        return True
+    if len(o) > 3 and o in a:
         return True
 
-    # Match key words (split and check overlap)
-    a_words = set(a.replace(',', ' ').split())
-    o_words = set(o.replace(',', ' ').split())
-    # Remove common filler words
-    filler = {'road', 'street', 'avenue', 'drive', 'lane', 'highway', 'creek',
-              'river', 'the', 'of', 'county', 'park', 'school', 'fire', 'station'}
-    a_key = a_words - filler
-    o_key = o_words - filler
+    # Multi-word key overlap: require at least 2 meaningful words to match
+    filler = {'road', 'rd', 'street', 'st', 'avenue', 'ave', 'drive', 'dr',
+              'lane', 'ln', 'highway', 'hwy', 'creek', 'river', 'the', 'of',
+              'county', 'park', 'school', 'fire', 'station', 'north', 'south',
+              'east', 'west', 'el', 'la', 'las', 'los', 'san', 'santa', 'de'}
+    a_words = set(a.replace(',', ' ').split()) - filler
+    o_words = set(o.replace(',', ' ').split()) - filler
 
-    if a_key and o_key and a_key & o_key:
+    overlap = a_words & o_words
+    if len(overlap) >= 2:
         return True
+    if len(overlap) >= 1 and (len(a_words) == 1 or len(o_words) == 1):
+        # Single meaningful word match only if one side has just 1 key word
+        # and it's a substantial word (>4 chars)
+        for word in overlap:
+            if len(word) > 4:
+                return True
 
     return False
 
