@@ -132,6 +132,65 @@ def geocode_location(loc_name, state=''):
     return None, None
 
 
+def _fuzzy_match(article_loc, osm_name):
+    a = article_loc.lower().strip()
+    o = osm_name.lower().strip()
+    if a == o:
+        return True
+    if len(a) > 3 and a in o:
+        return True
+    if len(o) > 3 and o in a:
+        return True
+    filler = {'road', 'rd', 'street', 'st', 'avenue', 'ave', 'drive', 'dr',
+              'lane', 'ln', 'highway', 'hwy', 'creek', 'river', 'the', 'of',
+              'county', 'park', 'school', 'fire', 'station', 'north', 'south',
+              'east', 'west', 'el', 'la', 'las', 'los', 'san', 'santa', 'de'}
+    a_words = set(a.replace(',', ' ').split()) - filler
+    o_words = set(o.replace(',', ' ').split()) - filler
+    overlap = a_words & o_words
+    if len(overlap) >= 2:
+        return True
+    if len(overlap) >= 1:
+        for word in overlap:
+            if len(word) > 4:
+                return True
+    return False
+
+
+_osm_cache = {}
+
+
+def osm_match_locations(event_data, halfwidth=0.05):
+    """Match article locations to OSM features inside the bbox."""
+    center = event_data.get('center', event_data.get('fema_center', [0, 0]))
+    cache_key = f"{center[0]:.4f},{center[1]:.4f},{halfwidth}"
+
+    if cache_key not in _osm_cache:
+        try:
+            from osm_features import get_osm_features, osm_to_pixels
+            osm_all = get_osm_features(center, halfwidth)
+            osm_inside = osm_to_pixels(osm_all, center)
+            _osm_cache[cache_key] = osm_inside
+        except Exception:
+            _osm_cache[cache_key] = []
+
+    osm_inside = _osm_cache[cache_key]
+    if not osm_inside:
+        return {}
+
+    locations = {}
+    for le in event_data.get('location_events', []):
+        loc_name = le.get('location', '')
+        if not loc_name or loc_name in locations:
+            continue
+        for feat in osm_inside:
+            if _fuzzy_match(loc_name, feat['name']):
+                locations[loc_name] = (feat['lat'], feat['lon'])
+                break
+
+    return locations
+
+
 def geocode_event_locations(event_data, halfwidth=0.05):
     """Geocode article locations, return only those inside the bbox."""
     center = event_data.get('center', event_data.get('fema_center', [0, 0]))
@@ -161,12 +220,11 @@ def event_to_v1_format(event_id, event_data):
     center = event_data.get('center', event_data.get('fema_center', [0, 0]))
     base_coords = (center[0], center[1])
 
-    # Geocode article locations and keep only those inside bbox
+    # Try OSM matching first (no API key needed), fall back to geocoding
     halfwidth = event_data.get('halfwidth', 0.05)
-    if GEOCODE_API_KEY:
+    locations = osm_match_locations(event_data, halfwidth)
+    if not locations and GEOCODE_API_KEY:
         locations = geocode_event_locations(event_data, halfwidth)
-    else:
-        locations = {}
 
     # Build events list from location_events
     events = []
