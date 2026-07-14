@@ -30,11 +30,28 @@ def test_overpass(lat, lon, halfwidth=0.05):
     print(f"Querying OSM at ({lat:.4f}, {lon:.4f}), bbox={bbox}")
     print(f"Query length: {len(query)} chars")
 
-    resp = requests.get(
+    # Try multiple Overpass endpoints
+    endpoints = [
+        'https://overpass.kumi.systems/api/interpreter',
+        'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
         'https://overpass-api.de/api/interpreter',
-        params={'data': query},
-        timeout=30
-    )
+    ]
+    resp = None
+    for url in endpoints:
+        try:
+            resp = requests.get(url, params={'data': query}, timeout=30,
+                               headers={'Accept': 'application/json'})
+            if resp.status_code == 200:
+                print(f"  Using: {url}")
+                break
+            print(f"  {url}: {resp.status_code}")
+        except Exception as e:
+            print(f"  {url}: {e}")
+            continue
+
+    if not resp or resp.status_code != 200:
+        print(f"All endpoints failed")
+        return
 
     print(f"Status: {resp.status_code}")
     print(f"Response length: {len(resp.text)} chars")
