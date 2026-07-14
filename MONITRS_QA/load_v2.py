@@ -6,11 +6,34 @@ into the format the QA scripts expect.
 import json
 import os
 import re
+import math
+import requests
 from os.path import join, isdir
+from time import sleep
 
 
 RESULTS_FILE = 'Data/events_processed.json'
 IMAGES_DIR = 'Data/images'
+GEOCODE_API_KEY = os.environ.get('GEOCODE_API_KEY', '')
+GEOCODE_CACHE_FILE = 'Data/geocode_cache.json'
+
+STATE_NAMES = {
+    'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
+    'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
+    'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
+    'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
+    'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
+    'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
+    'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
+    'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
+    'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
+    'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island', 'SC': 'South Carolina',
+    'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
+    'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
+    'WI': 'Wisconsin', 'WY': 'Wyoming', 'PR': 'Puerto Rico',
+}
+
+_geocode_cache = None
 
 
 def load_events(results_file=RESULTS_FILE):
@@ -62,15 +85,88 @@ def parse_captions(caption_text):
     return captions
 
 
+def _load_geocode_cache():
+    global _geocode_cache
+    if _geocode_cache is None:
+        if os.path.exists(GEOCODE_CACHE_FILE):
+            _geocode_cache = json.load(open(GEOCODE_CACHE_FILE))
+        else:
+            _geocode_cache = {}
+    return _geocode_cache
+
+
+def _save_geocode_cache():
+    if _geocode_cache:
+        os.makedirs(os.path.dirname(GEOCODE_CACHE_FILE) or '.', exist_ok=True)
+        json.dump(_geocode_cache, open(GEOCODE_CACHE_FILE, 'w'), indent=2)
+
+
+def geocode_location(loc_name, state=''):
+    if not GEOCODE_API_KEY:
+        return None, None
+    cache = _load_geocode_cache()
+    cache_key = f"{loc_name}|{state}"
+    if cache_key in cache:
+        return cache[cache_key]
+
+    state_full = STATE_NAMES.get(state, state)
+    query = f"{loc_name}, {state_full}" if state_full else loc_name
+    try:
+        resp = requests.get(
+            f'https://geocode.maps.co/search?q={query}&api_key={GEOCODE_API_KEY}',
+            timeout=10)
+        data = resp.json()
+        if data:
+            for r in data:
+                if state_full.lower() in r.get('display_name', '').lower():
+                    result = (float(r['lat']), float(r['lon']))
+                    cache[cache_key] = result
+                    return result
+            if 'United States' in data[0].get('display_name', ''):
+                result = (float(data[0]['lat']), float(data[0]['lon']))
+                cache[cache_key] = result
+                return result
+    except Exception:
+        pass
+    cache[cache_key] = (None, None)
+    return None, None
+
+
+def geocode_event_locations(event_data, halfwidth=0.05):
+    """Geocode article locations, return only those inside the bbox."""
+    center = event_data.get('center', event_data.get('fema_center', [0, 0]))
+    state = event_data.get('state', '')
+    locations = {}
+
+    loc_names = set()
+    for le in event_data.get('location_events', []):
+        loc = le.get('location', '')
+        if loc:
+            loc_names.add(loc)
+
+    for loc_name in loc_names:
+        lat, lon = geocode_location(loc_name, state)
+        if lat is None:
+            continue
+        # Check inside bbox
+        if (abs(lat - center[0]) <= halfwidth and abs(lon - center[1]) <= halfwidth):
+            locations[loc_name] = (lat, lon)
+
+    sleep(0.5)
+    return locations
+
+
 def event_to_v1_format(event_id, event_data):
     """Convert v2 event data to the format the existing QA generators expect."""
     center = event_data.get('center', event_data.get('fema_center', [0, 0]))
     base_coords = (center[0], center[1])
 
-    # Build locations dict from location_events
-    # Note: we don't have geocoded coordinates for individual locations,
-    # only the event center. Set locations empty to skip location_identification questions.
-    locations = {}
+    # Geocode article locations and keep only those inside bbox
+    halfwidth = event_data.get('halfwidth', 0.05)
+    if GEOCODE_API_KEY:
+        locations = geocode_event_locations(event_data, halfwidth)
+    else:
+        locations = {}
 
     # Build events list from location_events
     events = []
@@ -103,8 +199,14 @@ def load_all_v1_format(results_file=RESULTS_FILE):
     """Load all events and convert to v1 format for QA scripts."""
     events = load_events(results_file)
     converted = {}
+    n_with_locs = 0
     for eid, edata in events.items():
         if 'error' in edata:
             continue
         converted[eid] = event_to_v1_format(eid, edata)
+        if converted[eid]['locations']:
+            n_with_locs += 1
+    if GEOCODE_API_KEY:
+        _save_geocode_cache()
+        print(f"  {n_with_locs}/{len(converted)} events have geocoded locations inside bbox")
     return converted
