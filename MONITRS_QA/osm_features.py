@@ -11,7 +11,11 @@ import math
 from time import sleep
 
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_URLS = [
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+]
 
 
 def get_osm_features(center, halfwidth=0.05):
@@ -23,29 +27,30 @@ def get_osm_features(center, halfwidth=0.05):
     east = lon + halfwidth
     bbox = f"{south},{west},{north},{east}"
 
-    query = f"""
-    [out:json][timeout:30];
-    (
-      way["highway"]({bbox});
-      way["waterway"]({bbox});
-      node["place"]({bbox});
-      way["natural"="water"]({bbox});
-      way["landuse"]({bbox});
-      node["amenity"]({bbox});
-      way["building"]({bbox});
-      relation["boundary"="administrative"]["name"]({bbox});
-      way["railway"]({bbox});
-      way["power"="line"]({bbox});
-    );
-    out center;
-    """
+    query = (
+        '[out:json][timeout:30];'
+        '('
+        f'way["highway"~"primary|secondary|tertiary|motorway"]["name"]({bbox});'
+        f'way["waterway"~"river|stream|canal"]["name"]({bbox});'
+        f'node["place"~"city|town|village|hamlet|neighbourhood"]({bbox});'
+        f'way["natural"="water"]["name"]({bbox});'
+        f'node["amenity"~"school|hospital|fire_station|police"]["name"]({bbox});'
+        f'way["leisure"~"park|nature_reserve"]["name"]({bbox});'
+        ')'
+        ';out center;'
+    )
 
-    try:
-        resp = requests.get(OVERPASS_URL, params={'data': query}, timeout=30)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-    except Exception:
+    data = None
+    for url in OVERPASS_URLS:
+        try:
+            resp = requests.get(url, params={'data': query}, timeout=30,
+                                headers={'Accept': 'application/json'})
+            if resp.status_code == 200:
+                data = resp.json()
+                break
+        except Exception:
+            continue
+    if not data:
         return []
 
     features = []
