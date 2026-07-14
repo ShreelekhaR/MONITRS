@@ -209,15 +209,16 @@ def geocode_event_locations(event_data, halfwidth=0.05):
         if loc:
             loc_names.add(loc)
 
+    if not loc_names:
+        return {}
+
     for loc_name in loc_names:
         lat, lon = geocode_location(loc_name, state)
         if lat is None:
             continue
-        # Check inside bbox
         if (abs(lat - center[0]) <= halfwidth and abs(lon - center[1]) <= halfwidth):
             locations[loc_name] = (lat, lon)
 
-    sleep(0.5)
     return locations
 
 
@@ -261,19 +262,24 @@ def event_to_v1_format(event_id, event_data):
 
 def load_all_v1_format(results_file=RESULTS_FILE):
     """Load all events and convert to v1 format for QA scripts."""
+    import sys
+    print(f"Loading events from {results_file}...", flush=True)
     events = load_events(results_file)
+    print(f"  Loaded {len(events)} events", flush=True)
     converted = {}
     n_with_locs = 0
     total = len([e for e in events.values() if 'error' not in e])
+    print(f"  Processing {total} valid events (ENABLE_LOCATION_QA={os.environ.get('ENABLE_LOCATION_QA', 'not set')}, GEOCODE_API_KEY={'set' if GEOCODE_API_KEY else 'not set'})", flush=True)
     for i, (eid, edata) in enumerate(events.items()):
         if 'error' in edata:
             continue
-        if (i + 1) % 100 == 0:
-            print(f"  Processing {i+1}/{total}... ({n_with_locs} with locations so far)")
+        if (i + 1) % 50 == 0:
+            print(f"  [{i+1}/{total}] {n_with_locs} with locations so far", flush=True)
         converted[eid] = event_to_v1_format(eid, edata)
         if converted[eid]['locations']:
             n_with_locs += 1
+            print(f"    Event {eid}: {list(converted[eid]['locations'].keys())}", flush=True)
     if GEOCODE_API_KEY or os.environ.get('ENABLE_LOCATION_QA'):
         _save_geocode_cache()
-    print(f"  {n_with_locs}/{len(converted)} events have locations inside bbox")
+    print(f"  {n_with_locs}/{len(converted)} events have locations inside bbox", flush=True)
     return converted
