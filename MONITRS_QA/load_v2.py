@@ -171,7 +171,8 @@ def osm_match_locations(event_data, halfwidth=0.05):
             osm_all = get_osm_features(center, halfwidth)
             osm_inside = osm_to_pixels(osm_all, center)
             _osm_cache[cache_key] = osm_inside
-        except Exception:
+            sleep(1.5)  # rate limit
+        except Exception as e:
             _osm_cache[cache_key] = []
 
     osm_inside = _osm_cache[cache_key]
@@ -260,13 +261,16 @@ def load_all_v1_format(results_file=RESULTS_FILE):
     events = load_events(results_file)
     converted = {}
     n_with_locs = 0
-    for eid, edata in events.items():
+    total = len([e for e in events.values() if 'error' not in e])
+    for i, (eid, edata) in enumerate(events.items()):
         if 'error' in edata:
             continue
+        if (i + 1) % 100 == 0:
+            print(f"  Processing {i+1}/{total}... ({n_with_locs} with locations so far)")
         converted[eid] = event_to_v1_format(eid, edata)
         if converted[eid]['locations']:
             n_with_locs += 1
-    if GEOCODE_API_KEY:
+    if GEOCODE_API_KEY or os.environ.get('ENABLE_LOCATION_QA'):
         _save_geocode_cache()
-        print(f"  {n_with_locs}/{len(converted)} events have geocoded locations inside bbox")
+    print(f"  {n_with_locs}/{len(converted)} events have locations inside bbox")
     return converted
