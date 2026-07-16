@@ -8,16 +8,26 @@
 
 NAME="monitrs-train"
 DISK_SIZE=500
+NUM_GPUS=1
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --name) NAME="$2"; shift 2 ;;
         --disk) DISK_SIZE="$2"; shift 2 ;;
+        --gpus) NUM_GPUS="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
+
+case "$NUM_GPUS" in
+    1) MACHINE_TYPE="a2-highgpu-1g" ;;
+    2) MACHINE_TYPE="a2-highgpu-2g" ;;
+    4) MACHINE_TYPE="a2-highgpu-4g" ;;
+    8) MACHINE_TYPE="a2-highgpu-8g" ;;
+    *) echo "Error: --gpus must be 1, 2, 4, or 8"; exit 1 ;;
+esac
 
 PROJECT="$(gcloud config get-value project 2>/dev/null)"
 if [[ -z "$PROJECT" ]]; then
@@ -39,8 +49,9 @@ ZONES=(
 echo "Project: $PROJECT"
 echo "Instance name: $NAME"
 echo "Disk size: ${DISK_SIZE}GB"
+echo "GPUs: ${NUM_GPUS}x A100 40GB ($MACHINE_TYPE)"
 echo ""
-echo "Trying to create A100 40GB workbench in each zone..."
+echo "Trying to create workbench in each zone..."
 echo "==========================================="
 
 for zone in "${ZONES[@]}"; do
@@ -55,9 +66,9 @@ for zone in "${ZONES[@]}"; do
     output=$(gcloud workbench instances create "$NAME" \
         --project="$PROJECT" \
         --location="$zone" \
-        --machine-type="a2-highgpu-1g" \
+        --machine-type="$MACHINE_TYPE" \
         --accelerator-type="NVIDIA_TESLA_A100" \
-        --accelerator-core-count=1 \
+        --accelerator-core-count="$NUM_GPUS" \
         --install-gpu-driver \
         --boot-disk-size=150 \
         --boot-disk-type="PD_SSD" \
