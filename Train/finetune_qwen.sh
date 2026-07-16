@@ -29,7 +29,7 @@ echo "=========================================="
 # LoRA training on single A100 40GB
 swift sft \
     --model Qwen/Qwen2.5-VL-7B-Instruct \
-    --sft_type lora \
+    --tuner_type lora \
     --dataset "$TRAIN_DATA" \
     --val_dataset "$TEST_DATA" \
     --num_train_epochs 3 \
