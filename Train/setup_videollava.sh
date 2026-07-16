@@ -26,20 +26,15 @@ fi
 
 cd Video-LLaVA
 
-# Create conda/micromamba environment
-echo "Creating environment..."
-if command -v micromamba &> /dev/null; then
-    micromamba create -n videollava python=3.10 -y
-    eval "$(micromamba shell hook --shell bash)"
-    micromamba activate videollava
-else
-    conda create -n videollava python=3.10 -y
-    eval "$(conda shell.bash hook)"
-    conda activate videollava
-fi
+# Create environment (venv - simpler, no permission issues)
+echo "Creating Python venv..."
+python -m venv ~/videollava-env
+source ~/videollava-env/bin/activate
+pip install --upgrade pip
 
 # Install dependencies
 echo "Installing dependencies..."
+pip install packaging wheel
 pip install -e .
 pip install -e ".[train]"
 pip install flash-attn --no-build-isolation

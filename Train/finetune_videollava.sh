@@ -7,7 +7,7 @@
 #   - Images downloaded in Data/images/
 #
 # Usage:
-#   conda activate videollava
+#   source ~/videollava-env/bin/activate
 #   bash finetune_videollava.sh
 
 set -e
