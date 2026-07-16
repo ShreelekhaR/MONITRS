@@ -15,8 +15,8 @@ set -e
 cd Video-LLaVA
 
 MODEL_NAME="LanguageBind/Video-LLaVA-7B"
-DATA_PATH="../../MONITRS_QA/train_total.json"
-IMAGE_DIR="../../Data/images"
+DATA_PATH="../../train_total.json"
+IMAGE_DIR="../.."
 OUTPUT_DIR="../../checkpoints/videollava-monitrs-v2"
 
 echo "=========================================="
