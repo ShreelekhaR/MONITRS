@@ -51,7 +51,7 @@ swift sft \
     --output_dir "$OUTPUT_DIR" \
     --dataloader_num_workers 4 \
     --bf16 true \
-    --attn_impl flash_attn \
+    --attn_impl sdpa \
     --max_length 4096 \
     --freeze_vit true
 

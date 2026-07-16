@@ -26,7 +26,8 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 pip install transformers accelerate deepspeed peft
 pip install "ms-swift[llm]" -U
 pip install qwen-vl-utils
-pip install flash-attn --no-build-isolation
+# flash-attn is optional — SDPA works fine. Install separately if wheel builds:
+# TMPDIR=$HOME/tmp pip install flash-attn --no-build-isolation
 
 echo ""
 echo "=========================================="
