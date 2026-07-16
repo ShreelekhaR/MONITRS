@@ -59,6 +59,8 @@ for zone in "${ZONES[@]}"; do
         --accelerator-type="NVIDIA_A100_80GB" \
         --accelerator-core-count=1 \
         --install-gpu-driver \
+        --boot-disk-size=150 \
+        --boot-disk-type="PD_SSD" \
         --data-disk-size="$DISK_SIZE" \
         --data-disk-type="PD_SSD" \
         2>&1)
