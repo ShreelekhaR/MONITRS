@@ -26,9 +26,13 @@ fi
 
 cd Video-LLaVA
 
-# Create environment (venv - simpler, no permission issues)
-echo "Creating Python venv..."
-python -m venv ~/videollava-env
+# Create environment (venv with Python 3.10 - required by VideoLLaVA)
+echo "Creating Python 3.10 venv..."
+if ! command -v python3.10 &> /dev/null; then
+    echo "Installing Python 3.10..."
+    sudo apt-get update && sudo apt-get install -y python3.10 python3.10-venv
+fi
+python3.10 -m venv ~/videollava-env
 source ~/videollava-env/bin/activate
 pip install --upgrade pip
 
