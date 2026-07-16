@@ -40,7 +40,7 @@ echo "Project: $PROJECT"
 echo "Instance name: $NAME"
 echo "Disk size: ${DISK_SIZE}GB"
 echo ""
-echo "Trying to create A100 80GB workbench in each zone..."
+echo "Trying to create A100 40GB workbench in each zone..."
 echo "==========================================="
 
 for zone in "${ZONES[@]}"; do
