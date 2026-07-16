@@ -29,7 +29,7 @@ echo "=========================================="
 # LoRA training on single A100 40GB
 swift sft \
     --model Qwen/Qwen2.5-VL-7B-Instruct \
-    --train_type lora \
+    --sft_type lora \
     --dataset "$TRAIN_DATA" \
     --val_dataset "$TEST_DATA" \
     --num_train_epochs 3 \
@@ -47,7 +47,7 @@ swift sft \
     --save_steps 500 \
     --save_total_limit 3 \
     --eval_steps 500 \
-    --evaluation_strategy steps \
+    --eval_strategy steps \
     --output_dir "$OUTPUT_DIR" \
     --dataloader_num_workers 4 \
     --bf16 true \
