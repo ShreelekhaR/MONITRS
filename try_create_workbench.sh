@@ -55,8 +55,8 @@ for zone in "${ZONES[@]}"; do
     output=$(gcloud workbench instances create "$NAME" \
         --project="$PROJECT" \
         --location="$zone" \
-        --machine-type="a2-ultragpu-1g" \
-        --accelerator-type="NVIDIA_A100_80GB" \
+        --machine-type="a2-highgpu-1g" \
+        --accelerator-type="NVIDIA_TESLA_A100" \
         --accelerator-core-count=1 \
         --install-gpu-driver \
         --boot-disk-size=150 \
