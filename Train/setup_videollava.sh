@@ -26,11 +26,17 @@ fi
 
 cd Video-LLaVA
 
-# Create conda environment
-echo "Creating conda environment..."
-conda create -n videollava python=3.10 -y
-eval "$(conda shell.bash hook)"
-conda activate videollava
+# Create conda/micromamba environment
+echo "Creating environment..."
+if command -v micromamba &> /dev/null; then
+    micromamba create -n videollava python=3.10 -y
+    eval "$(micromamba shell hook --shell bash)"
+    micromamba activate videollava
+else
+    conda create -n videollava python=3.10 -y
+    eval "$(conda shell.bash hook)"
+    conda activate videollava
+fi
 
 # Install dependencies
 echo "Installing dependencies..."
