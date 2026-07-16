@@ -7,11 +7,16 @@
 #
 # Requires: gcloud CLI authenticated
 
-set -u
-
-PROJECT="${1:-$(gcloud config get-value project 2>/dev/null)}"
-if [[ "$1" == "--project" ]]; then
+PROJECT=""
+if [[ "${1:-}" == "--project" && -n "${2:-}" ]]; then
     PROJECT="$2"
+else
+    PROJECT="$(gcloud config get-value project 2>/dev/null)"
+fi
+
+if [[ -z "$PROJECT" ]]; then
+    echo "Error: no project set. Run: gcloud config set project YOUR_PROJECT"
+    exit 1
 fi
 
 echo "Checking A100 80GB availability for project: $PROJECT"
