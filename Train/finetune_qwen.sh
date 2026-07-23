@@ -20,6 +20,10 @@ if [ ! -f "$TRAIN_DATA" ]; then
     exit 1
 fi
 
+# Cap image tokens to keep sequences manageable
+export MAX_PIXELS=$((256*256))
+export IMAGE_MAX_TOKEN_NUM=1024
+
 echo "=========================================="
 echo "Finetuning Qwen2.5-VL-7B on MONITRS v2"
 echo "  Train: $TRAIN_DATA"
@@ -33,9 +37,9 @@ swift sft \
     --dataset "$TRAIN_DATA" \
     --val_dataset "$TEST_DATA" \
     --num_train_epochs 3 \
-    --per_device_train_batch_size 2 \
-    --per_device_eval_batch_size 2 \
-    --gradient_accumulation_steps 8 \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps 16 \
     --learning_rate 1e-4 \
     --lora_rank 16 \
     --lora_alpha 32 \

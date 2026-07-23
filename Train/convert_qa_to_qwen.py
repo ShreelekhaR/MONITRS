@@ -35,8 +35,8 @@ def convert(input_path, output_path):
             skipped += 1
             continue
 
-        # Verify all images exist
-        valid_paths = [p for p in video_paths if os.path.exists(p)]
+        # Verify all images exist, cap at 6 images per sample for training speed
+        valid_paths = [p for p in video_paths if os.path.exists(p)][:6]
         if len(valid_paths) == 0:
             skipped += 1
             continue
