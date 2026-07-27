@@ -177,7 +177,7 @@ class QwenBackend:
 
 class GeminiBackend:
     """Gemini via Vertex AI (uses GCP_PROJECT_ID env)."""
-    def __init__(self, model_id='gemini-2.5-flash', name='gemini'):
+    def __init__(self, model_id='gemini-3.1-flash-lite', name='gemini'):
         from google import genai
         from google.genai.types import HttpOptions
         project = os.environ.get('GCP_PROJECT_ID', 'ai-sandbox-dev-f139')
@@ -310,7 +310,7 @@ def build_backend(name, args):
             raise RuntimeError("No LoRA checkpoint found")
         return QwenBackend(lora_ckpt=ckpt, name='Ours (Qwen2.5-VL-ft)')
     elif name == 'gemini':
-        return GeminiBackend(model_id=args.gemini_model, name='Gemini 2.5-flash')
+        return GeminiBackend(model_id=args.gemini_model, name=f'Gemini {args.gemini_model}')
     elif name == 'teochat':
         return TEOChatBackend()
     else:
@@ -324,7 +324,7 @@ def main():
     parser.add_argument('--n-per-task', type=int, default=100)
     parser.add_argument('--test-file', default='test_total.json')
     parser.add_argument('--checkpoint', default=None)
-    parser.add_argument('--gemini-model', default='gemini-2.5-flash')
+    parser.add_argument('--gemini-model', default='gemini-3.1-flash-lite')
     parser.add_argument('--out', default='benchmark_results.json')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
