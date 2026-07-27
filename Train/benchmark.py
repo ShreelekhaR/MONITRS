@@ -48,7 +48,7 @@ def load_test_data(path='test_total.json'):
 
 
 def sample_by_task(data, n_per_task, seed=42):
-    """Return {task: [samples]} with up to n_per_task per task."""
+    """Return {task: [samples]}. n_per_task <= 0 or None means all samples."""
     by_task = defaultdict(list)
     for item in data:
         by_task[item.get('task', 'unknown')].append(item)
@@ -61,7 +61,10 @@ def sample_by_task(data, n_per_task, seed=42):
     sampled = {}
     for t, items in by_task.items():
         random.shuffle(items)
-        sampled[t] = items[:n_per_task]
+        if n_per_task and n_per_task > 0:
+            sampled[t] = items[:n_per_task]
+        else:
+            sampled[t] = items
     return sampled
 
 
@@ -226,14 +229,27 @@ class TEOChatBackend:
 
 # ─── Runner ──────────────────────────────────────────────────────────────────
 
-def run_model(backend, samples_by_task, max_new_tokens_mcq=16, max_new_tokens_open=128):
+def run_model(backend, samples_by_task, ckpt_path=None,
+              max_new_tokens_mcq=16, max_new_tokens_open=128):
     """Run one model on all task splits, return {task: [(pred, gt), ...]}."""
+    # Resume from checkpoint if exists
     results = {}
+    if ckpt_path and os.path.exists(ckpt_path):
+        with open(ckpt_path) as f:
+            saved = json.load(f)
+        results = {t: [(x['pred'], x['gt']) for x in pairs] for t, pairs in saved.items()}
+        print(f"[{backend.name}] Resumed {sum(len(v) for v in results.values())} predictions from {ckpt_path}")
+
     for task, samples in samples_by_task.items():
-        print(f"\n[{backend.name}] Task: {task} ({len(samples)} samples)")
-        pairs = []
+        already_done = len(results.get(task, []))
+        remaining = samples[already_done:]
+        if not remaining:
+            print(f"\n[{backend.name}] Task: {task} — already complete ({already_done})")
+            continue
+        print(f"\n[{backend.name}] Task: {task} ({len(remaining)} to do, {already_done} done)")
+        pairs = results.get(task, [])
         max_tokens = max_new_tokens_open if task == TASK_OPEN else max_new_tokens_mcq
-        for i, s in enumerate(samples, 1):
+        for i, s in enumerate(remaining, 1):
             q, gt, imgs = extract_question_and_images(s)
             if not imgs:
                 continue
@@ -242,10 +258,23 @@ def run_model(backend, samples_by_task, max_new_tokens_mcq=16, max_new_tokens_op
             except Exception as e:
                 pred = f'[ERR: {e}]'
             pairs.append((pred, gt))
-            if i % 10 == 0:
-                print(f"  {i}/{len(samples)}")
+            if i % 25 == 0:
+                print(f"  {i}/{len(remaining)}")
+                if ckpt_path:
+                    results[task] = pairs
+                    _save_checkpoint(results, ckpt_path)
         results[task] = pairs
+        if ckpt_path:
+            _save_checkpoint(results, ckpt_path)
     return results
+
+
+def _save_checkpoint(results, ckpt_path):
+    saved = {t: [{'pred': p, 'gt': g} for p, g in pairs] for t, pairs in results.items()}
+    tmp = ckpt_path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(saved, f)
+    os.replace(tmp, ckpt_path)
 
 
 def score_results(results):
@@ -321,7 +350,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--models', default='qwen-base,qwen-ft',
                         help='Comma-separated: qwen-base,qwen-ft,gemini,teochat')
-    parser.add_argument('--n-per-task', type=int, default=100)
+    parser.add_argument('--n-per-task', type=int, default=-1,
+                        help='Samples per task. -1 or 0 = all samples in test set.')
     parser.add_argument('--test-file', default='test_total.json')
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--gemini-model', default='gemini-3.1-flash-lite')
@@ -336,10 +366,14 @@ def main():
     all_scores = {}
     all_raw = {}
 
+    ckpt_dir = 'benchmark_ckpts'
+    os.makedirs(ckpt_dir, exist_ok=True)
+
     for name in model_names:
         print(f"\n{'#'*80}\n# Running {name}\n{'#'*80}")
         backend = build_backend(name, args)
-        raw = run_model(backend, samples_by_task)
+        ckpt_path = os.path.join(ckpt_dir, f'{name}.json')
+        raw = run_model(backend, samples_by_task, ckpt_path=ckpt_path)
         scored = score_results(raw)
         all_scores[backend.name] = scored
         all_raw[backend.name] = {t: [{'pred': p, 'gt': g} for p, g in pairs]
