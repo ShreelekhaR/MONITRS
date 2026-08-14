@@ -9,6 +9,11 @@ echo "Setting up GeoChat + TEOChat"
 echo "=========================================="
 
 # Debian bookworm doesn't have python3.10-venv → use micromamba in $HOME
+# Override pkgs cache since /opt/micromamba/pkgs is unwritable on GCP Workbench
+export CONDA_PKGS_DIRS="$HOME/.mamba/pkgs"
+export MAMBA_ROOT_PREFIX="$HOME/.mamba"
+mkdir -p "$CONDA_PKGS_DIRS"
+
 if [ ! -d ~/rs-env ]; then
     echo "Creating micromamba env at ~/rs-env..."
     if ! command -v micromamba &> /dev/null; then
