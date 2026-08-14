@@ -41,15 +41,29 @@ fi
 # Install GeoChat (installs torch etc.)
 echo "Installing GeoChat deps..."
 cd ~/GeoChat
-pip install -e . || true
-pip install -e ".[train]" || true
+pip install -e . --no-deps || true
+# Install required deps manually (avoid bnb path-scan on GCP)
+pip install "transformers==4.31.0" "tokenizers>=0.13.3" sentencepiece shortuuid \
+    "accelerate==0.21.0" peft "einops==0.6.1" "einops-exts==0.0.4" \
+    "timm==0.6.13" "scikit-learn==1.2.2" gradio_client shortuuid httpx \
+    "protobuf<4" torchvision
 
-# TEOChat is VideoLLaVA-based; install its extras too
+# TEOChat (VideoLLaVA-based). Install without conflicting gradio pin.
 echo "Installing TEOChat deps..."
 cd ~/TEOChat
-pip install -e . || true
+pip install -e . --no-deps || true
+# TEOChat needs videollava — likely already at the same path via -e
+pip install "decord" "opencv-python==4.7.0.72" "av==11.0.0" imageio || true
 
-# Metrics for benchmark
+# Bitsandbytes causes GCP permission errors. Uninstall — we don't quantize for eval.
+pip uninstall -y bitsandbytes || true
+# Older accelerate imports bnb unconditionally. Bump to a version that doesn't.
+pip install "accelerate>=0.25.0" --upgrade
+
+# Fix numpy/sklearn binary mismatch from newer wheels
+pip install --force-reinstall --no-deps "numpy==1.26.4" "scipy==1.11.4"
+
+# Metrics
 pip install nltk rouge-score
 python -c "import nltk; nltk.download('wordnet'); nltk.download('punkt_tab')"
 
