@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MONITRS v2 — Update Slides</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         margin: 0; background: #1a1c22; color: #e8ebf0; }
+  .deck { max-width: 100vw; }
+  .slide { min-height: 100vh; padding: 60px 80px; display: flex; flex-direction: column;
+           justify-content: center; page-break-after: always;
+           border-bottom: 1px solid #2a2e38; }
+  .slide-title { align-items: center; text-align: center; background:
+                 linear-gradient(135deg, #1a1c22 0%, #232a3a 100%); }
+  h1 { font-size: 56px; margin: 0 0 12px; font-weight: 700; letter-spacing: -1px; }
+  h2 { font-size: 40px; margin: 0 0 24px; color: #7db3ff; letter-spacing: -0.5px; }
+  h3 { font-size: 22px; margin: 24px 0 12px; color: #9ab8d9; }
+  h4 { font-size: 16px; margin: 12px 0 6px; color: #7db3ff; text-transform: uppercase; letter-spacing: 1px; }
+  .subtitle { font-size: 24px; color: #9ab8d9; margin-bottom: 16px; }
+  .small { color: #6f7a90; font-size: 15px; }
+  p { line-height: 1.6; font-size: 18px; }
+  ul { line-height: 1.8; font-size: 17px; }
+  li { margin: 6px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 15px; }
+  th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #2a2e38; vertical-align: top; }
+  th { background: #1e2028; color: #7db3ff; font-weight: 600; }
+  td.area { font-weight: 600; color: #d0d7e2; white-space: nowrap; }
+  td.v1 { color: #f88; }
+  td.v2 { color: #8f8; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; }
+  .card { background: #232733; padding: 24px; border-radius: 12px; border: 1px solid #2f3444; }
+  .card-good { border-left: 4px solid #4ec877; }
+  .card-bad  { border-left: 4px solid #e04e4e; }
+  .card-mid  { border-left: 4px solid #e0b04e; }
+  .stat { text-align: center; padding: 32px; background: #232733; border-radius: 16px; }
+  .stat .num { font-size: 48px; font-weight: 700; color: #7db3ff; display: block; }
+  .stat .label { font-size: 14px; color: #9ab8d9; text-transform: uppercase; letter-spacing: 1px; margin-top: 8px; }
+  code { background: #0e1015; padding: 2px 8px; border-radius: 4px; font-size: 14px; color: #b9d0f2; }
+  .example-q { color: #9ab8d9; font-weight: 600; }
+  .example-a { color: #d0d7e2; font-style: italic; margin-top: 4px; }
+  .note { color: #6f7a90; font-size: 13px; margin-top: 6px; font-style: italic; }
+  .footer { position: absolute; bottom: 20px; right: 40px; color: #4a5063; font-size: 11px; }
+  .pill { display: inline-block; background: #2a3040; color: #7db3ff; padding: 4px 10px;
+          border-radius: 16px; font-size: 12px; margin-right: 6px; margin-bottom: 4px; }
+  .highlight { color: #7db3ff; font-weight: 600; }
+  .todo { color: #e0b04e; font-style: italic; }
+  .arrow { color: #6f7a90; margin: 0 8px; font-weight: bold; }
+  .callout { background: #1e2b3d; border-left: 4px solid #7db3ff; padding: 12px 20px;
+             border-radius: 6px; margin: 12px 0; font-size: 15px; }
+</style>
+</head>
+<body>
+<div class="deck">
+
+<!-- ── Slide 1: Title ─────────────────────────────────────────────────── -->
+<section class="slide slide-title">
+  <h1>MONITRS v2</h1>
+  <p class="subtitle">Multi-image Satellite VQA for Natural Disasters</p>
+  <p class="small" style="margin-top: 40px;">
+    <span class="pill">9,838 events</span>
+    <span class="pill">50K Sentinel-2 images</span>
+    <span class="pill">70,911 QA pairs</span>
+    <span class="pill">17 disaster types</span>
+  </p>
+  <p class="small" style="margin-top: 60px; color: #6f7a90;">
+    Rebuild of v1 (2023-2024) → v2 (2026): new SDKs, better geolocation, factual captions, cleaner QA
+  </p>
+</section>
+
+<!-- ── Slide 2: What broke in v1 ─────────────────────────────────────── -->
+<section class="slide">
+  <h2>What broke in v1</h2>
+  <ul>
+    <li><b>Google Search API</b> deprecated → article scraping fell over</li>
+    <li><code>google.generativeai</code> SDK sunsetting → we can't use the Gemini calls anymore</li>
+    <li><b>LLM-only geolocation</b> was unreliable → some events centered hundreds of km off</li>
+    <li><b>Speculative captions</b> ("satellite would show…") → not learnable, model learned to hedge</li>
+    <li><b>Broken pixel geo→pixel math</b> (used width/360°) → all locations mapped to image center (256, 256)</li>
+    <li><b>Slow image downloads</b> (~30s/event, serial per-date) → prohibitive at 10K events</li>
+  </ul>
+  <div class="callout">
+    Goal: rebuild the pipeline so a) it runs, b) it produces factual grounded data, c) fits on one A100
+    for LoRA finetuning of a modern VLM.
+  </div>
+</section>
+
+<!-- ── Slide 3: Pipeline changes v1 → v2 ─────────────────────────────── -->
+<section class="slide">
+  <h2>Pipeline changes: v1 → v2</h2>
+  <table>
+    <thead><tr><th>Area</th><th>v1 (2023–2024)</th><th>v2 (2026)</th></tr></thead>
+    <tbody>
+      <tr><td class="area">Article search</td><td class="v1">Google Search API</td><td class="v2">DuckDuckGo (<code>ddgs</code>)</td></tr>
+      <tr><td class="area">LLM SDK</td><td class="v1">google.generativeai</td><td class="v2">google-genai + Vertex AI</td></tr>
+      <tr><td class="area">LLM model</td><td class="v1">gemini-pro / 1.5</td><td class="v2">gemini-2.5-flash (org policy blocks lite/3.1)</td></tr>
+      <tr><td class="area">Fire geolocation</td><td class="v1">LLM guess</td><td class="v2">NASA FIRMS hotspot centroid</td></tr>
+      <tr><td class="area">Non-fire geolocation</td><td class="v1">LLM (unbounded)</td><td class="v2">LLM + bbox validation + FEMA fallback</td></tr>
+      <tr><td class="area">Image download</td><td class="v1">Per-date EE query, ~30s/event</td><td class="v2">Single EE query per event, few seconds</td></tr>
+      <tr><td class="area">Caption grounding</td><td class="v1">Speculative from Gemini</td><td class="v2">Factual from scraped article text only</td></tr>
+      <tr><td class="area">QA input</td><td class="v1">Short event summaries</td><td class="v2">Full dated captions with numbers</td></tr>
+      <tr><td class="area">QA prompts</td><td class="v1">Generic ("would/could/can")</td><td class="v2">Ban hedges; ground answer in caption facts</td></tr>
+      <tr><td class="area">Location QA</td><td class="v1">Random pixel coords (broken)</td><td class="v2">Local Nominatim + bbox filter + fixed GSD math</td></tr>
+      <tr><td class="area">Geo→pixel</td><td class="v1"><code>lon × (width/360)</code> → wrong</td><td class="v2">Sentinel-2 10m GSD, meters/degree at bbox lat</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ── Slide 4: Dataset composition ──────────────────────────────────── -->
+<section class="slide">
+  <h2>Dataset composition</h2>
+  <div class="three-col" style="margin: 32px 0;">
+    <div class="stat"><span class="num">9,838</span><div class="label">Events processed</div></div>
+    <div class="stat"><span class="num">50,210</span><div class="label">Sentinel-2 images</div></div>
+    <div class="stat"><span class="num">70,911</span><div class="label">QA pairs</div></div>
+  </div>
+  <div class="two-col">
+    <div>
+      <h3>Event types</h3>
+      <ul>
+        <li>Hurricane — 4,500</li>
+        <li>Severe Storm — 1,754</li>
+        <li>Flood — 1,396</li>
+        <li>Severe Ice Storm — 953</li>
+        <li>Fire — 511</li>
+        <li>Coastal Storm — 174</li>
+        <li>Tornado — 174</li>
+        <li>+ 10 others (snowstorm, earthquake, landslide, …)</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Center-strategy split</h3>
+      <ul>
+        <li><b>FIRMS</b> — 508 events (all fires)</li>
+        <li><b>LLM</b> — 6,135 events (bbox-validated coords)</li>
+        <li><b>FEMA</b> — 3,195 events (county centroid fallback)</li>
+      </ul>
+      <p class="note">FIRMS gets fire coords from NASA satellite hotspots.
+      LLM proposes coords for non-fire events; if outside county bbox we fall back to
+      FEMA's county centroid.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Slide 5: QA quality iterations ────────────────────────────────── -->
+<section class="slide">
+  <h2>QA quality iterations</h2>
+  <p class="small" style="margin-bottom: 24px;">
+    Three versions of the same open-ended question. We went from speculative → image-analysis-pretending →
+    fact-extraction-from-captions.
+  </p>
+
+  <div class="card card-bad" style="margin-bottom: 16px;">
+    <h4>Bad: speculative (v1-style)</h4>
+    <p class="example-q">Q: Can satellite imagery detect physical damage from Hurricane Ida?</p>
+    <p class="example-a">A: High-resolution satellite imagery <b>can detect</b> roof damage, collapsed
+    structures, and debris accumulation in residential and commercial areas…</p>
+    <p class="note">Hedge words. Model can't verify from image. Not learnable.</p>
+  </div>
+
+  <div class="card card-mid" style="margin-bottom: 16px;">
+    <h4>Interim: Gemini pretends to look at images</h4>
+    <p class="example-q">Q: What visual evidence indicates the Road 702 Fire reached the Republican River?</p>
+    <p class="example-a">A: A dark burn scar is <b>visibly abutting</b> the Republican River.
+    This <b>visual evidence confirms</b> the fire's progression…</p>
+    <p class="note">Better, but Gemini is inventing visual descriptions it can't actually see.
+    Training on this teaches the model to fabricate too.</p>
+  </div>
+
+  <div class="card card-good">
+    <h4>Final: facts from captions, no image interpretation</h4>
+    <p class="example-q">Q: How did the burn scar evolve between July 23 and August 2, 2022?</p>
+    <p class="example-a">A: The burn scar became more pronounced and larger, eventually covering
+    approximately <b>6,735 acres</b> north of <b>FM205</b> by August 2.</p>
+    <p class="note">Facts extracted from article captions. Gemini never sees the images.
+    The model learns caption facts ↔ satellite image mapping.</p>
+  </div>
+</section>
+
+<!-- ── Slide 6: The mental model shift ────────────────────────────────── -->
+<section class="slide">
+  <h2>The key insight</h2>
+  <div class="callout" style="font-size: 18px; padding: 20px 28px;">
+    <b>Gemini doesn't know what disasters look like in satellite imagery.</b>
+    Neither does the base Qwen2.5-VL. So we can't ask Gemini to describe images —
+    we ask it to convert article facts into Q&A pairs. The trained model then learns to
+    associate those facts with the pixel patterns.
+  </div>
+  <div class="two-col" style="margin-top: 40px;">
+    <div>
+      <h3>Old approach</h3>
+      <p>Prompt Gemini: "Look at these images, describe what you see."</p>
+      <p class="note">Result: Gemini hallucinates plausible-sounding descriptions.
+      They don't match the actual image content. Model learns nothing useful.</p>
+    </div>
+    <div>
+      <h3>New approach</h3>
+      <p>Prompt Gemini: "Here are facts from news articles. Convert them into
+      questions and answers, using only the given facts."</p>
+      <p class="note">Result: Every answer is grounded in a real article statement.
+      During finetuning, the model learns which satellite patterns co-occur with each fact.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Slide 7: Task types ───────────────────────────────────────────── -->
+<section class="slide">
+  <h2>Task types in the QA set</h2>
+  <table>
+    <thead><tr><th>Task</th><th>Total</th><th>Test</th><th>Source</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="area">event_type</td><td>9,178</td><td>1,851</td><td>templated</td>
+        <td class="small">"What natural disaster is occurring here?<br>a. Fire b. Hurricane c. Storm d. Volcano"</td>
+      </tr>
+      <tr>
+        <td class="area">temporal_grounding</td><td>5,475</td><td>815</td><td>templated</td>
+        <td class="small">"On which date did the Severe Ice Storm begin?<br>a. 2021-02-18 b. 2021-02-08 c. 2021-02-13 d. No event"</td>
+      </tr>
+      <tr>
+        <td class="area">location_identification</td><td>237</td><td>37</td><td>templated + Nominatim</td>
+        <td class="small">"Where is Cathedral Oaks Road in pixel coords?<br>a. (256, 256) b. (7, 83) c. …"</td>
+      </tr>
+      <tr>
+        <td class="area">multiple_choice</td><td>28,007</td><td>5,615</td><td>Gemini + captions</td>
+        <td class="small">"What was the extent of fire damage?<br>a. Burn scar covering 365,850 acres b. …"</td>
+      </tr>
+      <tr>
+        <td class="area">custom (open-ended)</td><td>28,014</td><td>5,619</td><td>Gemini + captions</td>
+        <td class="small">"How did the flooding change between August 27 and September 1?"</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ── Slide 8: Location QA journey ──────────────────────────────────── -->
+<section class="slide">
+  <h2>Location grounding: multiple dead-ends</h2>
+  <ol>
+    <li><b>Broken geo→pixel math.</b> Old code did <code>(lon × width/360)</code> — collapsed everything to
+        (256, 256). Fixed with proper Sentinel-2 10m GSD projection at bbox latitude.</li>
+    <li><b>Public geocoder rate-limited.</b> <code>geocode.maps.co</code> hits limits at 1/sec; also
+        wrong for many small US places ("Cambridge, Nebraska" → Cambridge, UK).</li>
+    <li><b>OSM Overpass API blocked from GCP.</b> Rich features available locally, but the workbench IP
+        gets throttled/refused after a few requests.</li>
+    <li><b>Local Nominatim, in-house instance.</b> No rate limits, state-hint queries, exact-match on US
+        places. This works.</li>
+  </ol>
+  <div class="callout">
+    <b>Result:</b> 760 of 9,838 events have at least one article location that geocodes
+    inside its bbox. That gives us <b>237 location_identification questions</b> — small n, but real coordinates.
+  </div>
+</section>
+
+<!-- ── Slide 9: Training config ──────────────────────────────────────── -->
+<section class="slide">
+  <h2>Finetuning setup</h2>
+  <div class="two-col">
+    <div>
+      <h3>Model</h3>
+      <ul>
+        <li><b>Qwen2.5-VL-7B-Instruct</b></li>
+        <li>Native multi-image / variable-resolution VLM</li>
+        <li>Modern replacement for VideoLLaVA</li>
+      </ul>
+      <h3>Adapter</h3>
+      <ul>
+        <li>LoRA rank 16, α 32, dropout 0.05</li>
+        <li>Target: all linear layers in text tower</li>
+        <li>Vision tower frozen</li>
+        <li>~40M trainable / 8.3B total (0.5%)</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Data</h3>
+      <ul>
+        <li>Train: 20K samples (stratified across 5 tasks)</li>
+        <li>Test: 13,937 samples (untouched during training)</li>
+        <li>Full image sequences per sample</li>
+        <li>Images downscaled to 256×256 (≈84 tokens each)</li>
+      </ul>
+      <h3>Hardware</h3>
+      <ul>
+        <li>1× A100 80GB (us-central1-a)</li>
+        <li>bf16, gradient checkpointing, SDPA attention</li>
+        <li>Batch 1 × grad-accum 16 → effective batch 16</li>
+        <li>3 epochs, ~20 hours</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ── Slide 10: Benchmark setup ─────────────────────────────────────── -->
+<section class="slide">
+  <h2>Benchmark setup</h2>
+  <h3>Models compared</h3>
+  <ul>
+    <li><b>Qwen2.5-VL-base</b> — no finetune, zero-shot on our tasks</li>
+    <li><b>Ours (Qwen2.5-VL-LoRA)</b> — MONITRS-finetuned</li>
+    <li><b>Gemini 3.1-flash-lite</b> — proprietary baseline</li>
+    <li><b>GeoChat</b> — remote-sensing VLM (single image, uses first frame) <span class="todo">[running]</span></li>
+    <li><b>TEOChat</b> — temporal remote-sensing VLM (multi-image) <span class="todo">[running]</span></li>
+  </ul>
+  <h3>Evaluation</h3>
+  <ul>
+    <li>Same 13,937 test samples across all models (seed 42)</li>
+    <li>Test events never seen during training (event-level split)</li>
+    <li>MCQ metric: letter-match accuracy</li>
+    <li>Open-ended metrics: BLEU-1..4, METEOR, ROUGE-L (nltk + rouge-score)</li>
+    <li>Every model sees the same image count per sample; Qwen/TEOChat get full sequences,
+        Gemini gets full sequences, GeoChat gets only the first image (arch limit)</li>
+  </ul>
+</section>
+
+<!-- ── Slide 11: Preliminary results ─────────────────────────────────── -->
+<section class="slide">
+  <h2>Preliminary benchmark results</h2>
+  <p class="small">Qwen-base + Gemini complete on all 13,937 test samples. Qwen-ft resuming from 9,722.
+  GeoChat + TEOChat pending environment setup.</p>
+
+  <h3>Table 2: Templated MCQ (accuracy)</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Event Classification (n=1,851)</th><th>Temporal Grounding (n=815)</th><th>Location Grounding (n=37)</th></tr></thead>
+    <tbody>
+      <tr><td class="area">Qwen2.5-VL-base</td><td class="todo">TBD</td><td class="todo">TBD</td><td class="todo">TBD</td></tr>
+      <tr><td class="area">Ours (LoRA)</td><td class="todo">TBD</td><td class="todo">TBD</td><td class="todo">TBD</td></tr>
+      <tr><td class="area">Gemini 3.1-flash-lite</td><td class="todo">TBD</td><td class="todo">TBD</td><td class="todo">TBD</td></tr>
+      <tr><td class="area">GeoChat</td><td class="todo">running</td><td class="todo">—</td><td class="todo">running</td></tr>
+      <tr><td class="area">TEOChat</td><td class="todo">running</td><td class="todo">running</td><td class="todo">running</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Table 3: Generated VQA</h3>
+  <table>
+    <thead><tr><th>Method</th><th>MCQ Acc (n=5,615)</th><th>BLEU-1..4 / METEOR / ROUGE-L (n=5,619)</th></tr></thead>
+    <tbody>
+      <tr><td class="area">Qwen2.5-VL-base</td><td class="todo">TBD</td><td class="todo">TBD</td></tr>
+      <tr><td class="area">Ours (LoRA)</td><td class="todo">TBD</td><td class="todo">TBD</td></tr>
+      <tr><td class="area">Gemini 3.1-flash-lite</td><td class="todo">TBD</td><td class="todo">TBD</td></tr>
+    </tbody>
+  </table>
+  <p class="note">Fill in from <code>python Train/print_tables.py --ckpts</code> once all runs complete.</p>
+</section>
+
+<!-- ── Slide 12: Next steps ──────────────────────────────────────────── -->
+<section class="slide">
+  <h2>Next steps</h2>
+  <ul>
+    <li><b>Finish benchmark runs</b> — Qwen-ft resume, GeoChat, TEOChat</li>
+    <li><b>Chat demo</b> — side-by-side model predictions on same test samples
+        (<code>make_chat_demo.py</code>)</li>
+    <li><b>More location QA</b> — 237 is too few for a strong claim.
+        Options: extend geocoding across derivative phrases, add OSM matching once we're off GCP,
+        or use manual annotation for a small gold set.</li>
+    <li><b>Upload to HuggingFace</b> once training is validated
+        (dataset + LoRA + benchmark JSON)</li>
+    <li><b>Failure analysis</b> — where do models tie or all fail? Cloud coverage, ambiguous events,
+        small-visual-signature disasters (winter storms, tornado tracks)?</li>
+  </ul>
+</section>
+
+<!-- ── Slide 13: Artifacts ───────────────────────────────────────────── -->
+<section class="slide">
+  <h2>Where everything lives</h2>
+  <table>
+    <thead><tr><th>Artifact</th><th>Location</th></tr></thead>
+    <tbody>
+      <tr><td class="area">Code</td><td><code>github.com/ShreelekhaR/MONITRS</code> branch <code>v2</code></td></tr>
+      <tr><td class="area">Events + captions</td><td><code>gs://lekhas-new-bucket/monitrs/Data/events_processed.json</code></td></tr>
+      <tr><td class="area">QA files</td><td><code>gs://lekhas-new-bucket/monitrs/qa/</code></td></tr>
+      <tr><td class="area">Sentinel-2 images (zipped)</td><td><code>gs://lekhas-new-bucket/monitrs/images/*.zip</code> (23 GB, 10 chunks)</td></tr>
+      <tr><td class="area">Qwen2.5-VL LoRA checkpoint</td><td><code>gs://lekhas-new-bucket/monitrs/checkpoints/qwen2.5-vl-monitrs/</code></td></tr>
+      <tr><td class="area">Benchmark checkpoints</td><td><code>~/MONITRS/benchmark_ckpts/*.json</code> on workbench</td></tr>
+      <tr><td class="area">Workbench</td><td><code>lekha-new-a100</code> (us-central1-a, 1× A100 80GB)</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</div>
+</body>
+</html>
