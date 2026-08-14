@@ -226,6 +226,13 @@ class GeminiBackend:
                       'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_HARASSMENT']
         ]
 
+        # Gemini 2.5 spends output tokens on invisible reasoning. Disable it.
+        thinking = None
+        try:
+            thinking = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            pass
+
         try:
             resp = self.client.models.generate_content(
                 model=self.model_id,
@@ -234,6 +241,7 @@ class GeminiBackend:
                     max_output_tokens=max_new_tokens,
                     temperature=0.0,
                     safety_settings=safety,
+                    thinking_config=thinking,
                 ),
             )
             text = (resp.text or '').strip()
