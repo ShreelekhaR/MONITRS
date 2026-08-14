@@ -219,6 +219,13 @@ class GeminiBackend:
             parts.append(types.Part.from_bytes(data=buf.getvalue(), mime_type='image/png'))
         parts.append(types.Part.from_text(text=question))
 
+        # Disable safety filters — none of our images/questions are harmful
+        safety = [
+            types.SafetySetting(category=c, threshold='BLOCK_NONE')
+            for c in ['HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_DANGEROUS_CONTENT',
+                      'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_HARASSMENT']
+        ]
+
         try:
             resp = self.client.models.generate_content(
                 model=self.model_id,
@@ -226,9 +233,14 @@ class GeminiBackend:
                 config=types.GenerateContentConfig(
                     max_output_tokens=max_new_tokens,
                     temperature=0.0,
+                    safety_settings=safety,
                 ),
             )
-            return (resp.text or '').strip()
+            text = (resp.text or '').strip()
+            if not text and resp.candidates:
+                reason = getattr(resp.candidates[0], 'finish_reason', '?')
+                return f'[EMPTY: finish_reason={reason}]'
+            return text
         except Exception as e:
             return f'[ERR: {e}]'
 
