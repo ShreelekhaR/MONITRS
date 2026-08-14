@@ -34,6 +34,10 @@ import random
 from glob import glob
 from collections import defaultdict
 
+# Match training resolution for fair Qwen eval
+os.environ.setdefault('MAX_PIXELS', str(256 * 256))
+os.environ.setdefault('IMAGE_MAX_TOKEN_NUM', '1024')
+
 
 TASKS_MCQ = ['event_type', 'temporal_grounding', 'location_identification', 'multiple_choice']
 TASK_OPEN = 'custom'
@@ -68,8 +72,12 @@ def sample_by_task(data, n_per_task, seed=42):
     return sampled
 
 
-def extract_question_and_images(sample, max_images=8):
-    """Get question, answer, and uniformly-sampled image sequence."""
+def extract_question_and_images(sample, max_images=None):
+    """Get question, answer, and image sequence.
+
+    max_images=None (default): keep ALL images to match training.
+    max_images=N: uniformly sample N frames (first + last preserved).
+    """
     convos = sample['conversations']
     question = convos[0]['value']
     answer = convos[1]['value']
@@ -77,10 +85,9 @@ def extract_question_and_images(sample, max_images=8):
     question = re.sub(r'^This is a sequence of .*?:\s*', '', question).strip()
 
     all_paths = [p for p in sample.get('video', []) if os.path.exists(p)]
-    if len(all_paths) <= max_images:
+    if max_images is None or len(all_paths) <= max_images:
         image_paths = all_paths
     else:
-        # Uniform sample to preserve temporal coverage (first + last always included)
         step = (len(all_paths) - 1) / (max_images - 1)
         indices = [round(i * step) for i in range(max_images)]
         image_paths = [all_paths[i] for i in indices]
