@@ -68,14 +68,23 @@ def sample_by_task(data, n_per_task, seed=42):
     return sampled
 
 
-def extract_question_and_images(sample):
+def extract_question_and_images(sample, max_images=8):
+    """Get question, answer, and uniformly-sampled image sequence."""
     convos = sample['conversations']
     question = convos[0]['value']
     answer = convos[1]['value']
-    # Strip <video>, <image> tokens
     question = re.sub(r'<video>|<image>', '', question).strip()
     question = re.sub(r'^This is a sequence of .*?:\s*', '', question).strip()
-    image_paths = [p for p in sample.get('video', []) if os.path.exists(p)][:6]
+
+    all_paths = [p for p in sample.get('video', []) if os.path.exists(p)]
+    if len(all_paths) <= max_images:
+        image_paths = all_paths
+    else:
+        # Uniform sample to preserve temporal coverage (first + last always included)
+        step = (len(all_paths) - 1) / (max_images - 1)
+        indices = [round(i * step) for i in range(max_images)]
+        image_paths = [all_paths[i] for i in indices]
+
     return question, answer, image_paths
 
 
