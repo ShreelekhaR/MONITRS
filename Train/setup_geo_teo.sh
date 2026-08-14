@@ -8,17 +8,19 @@ echo "=========================================="
 echo "Setting up GeoChat + TEOChat"
 echo "=========================================="
 
-# Both use LLaVA/VideoLLaVA-based code that pins torch==2.0.1 → needs Python 3.10
-if ! command -v python3.10 &> /dev/null; then
-    echo "Installing Python 3.10..."
-    sudo apt-get update && sudo apt-get install -y python3.10 python3.10-venv python3.10-dev
+# Debian bookworm doesn't have python3.10-venv → use micromamba in $HOME
+if [ ! -d ~/rs-env ]; then
+    echo "Creating micromamba env at ~/rs-env..."
+    if ! command -v micromamba &> /dev/null; then
+        echo "micromamba not found. Install it first or run this on GCP Workbench."
+        exit 1
+    fi
+    micromamba create -p ~/rs-env -c conda-forge python=3.10 -y
 fi
 
-# Create venv
-if [ ! -d ~/rs-env ]; then
-    python3.10 -m venv ~/rs-env
-fi
-source ~/rs-env/bin/activate
+# Activate the prefix env
+eval "$(micromamba shell hook --shell bash)"
+micromamba activate ~/rs-env
 pip install --upgrade pip
 
 # Clone GeoChat
