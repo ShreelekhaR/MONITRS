@@ -236,11 +236,128 @@ class GeminiBackend:
         pass
 
 
+class GeoChatBackend:
+    """GeoChat single-image RS VLM. Uses first image of the sequence only."""
+    def __init__(self, name='GeoChat', model_path='MBZUAI/geochat-7B',
+                 geochat_repo=None):
+        import sys, torch
+        self.torch = torch
+        geochat_repo = geochat_repo or os.path.expanduser('~/GeoChat')
+        if not os.path.isdir(geochat_repo):
+            raise RuntimeError(f"GeoChat repo not found at {geochat_repo}. "
+                               "Clone: git clone https://github.com/mbzuai-oryx/GeoChat.git ~/GeoChat")
+        sys.path.insert(0, geochat_repo)
+        from geochat.model.builder import load_pretrained_model
+        from geochat.mm_utils import get_model_name_from_path
+
+        print(f"[{name}] Loading {model_path}...")
+        model_name = get_model_name_from_path(model_path)
+        self.tokenizer, self.model, self.image_processor, _ = load_pretrained_model(
+            model_path, None, model_name, load_8bit=False, load_4bit=False, device='cuda')
+        self.model.eval()
+        self.name = name
+        self._sys = sys
+        self._geochat_repo = geochat_repo
+
+    def generate(self, question, image_paths, max_new_tokens=128):
+        from PIL import Image
+        from geochat.conversation import conv_templates
+        from geochat.mm_utils import tokenizer_image_token, process_images
+        from geochat.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
+
+        # GeoChat is single-image: use FIRST image of the sequence
+        if not image_paths:
+            return '[ERR: no images]'
+        image = Image.open(image_paths[0]).convert('RGB')
+        image_tensor = process_images([image], self.image_processor,
+                                       self.model.config)[0].unsqueeze(0).half().cuda()
+
+        qs = DEFAULT_IMAGE_TOKEN + '\n' + question
+        conv = conv_templates['llava_v1'].copy()
+        conv.append_message(conv.roles[0], qs)
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
+
+        input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX,
+                                          return_tensors='pt').unsqueeze(0).cuda()
+        with self.torch.inference_mode():
+            output_ids = self.model.generate(
+                input_ids, images=image_tensor,
+                do_sample=False, max_new_tokens=max_new_tokens, use_cache=True)
+        text = self.tokenizer.batch_decode(
+            output_ids[:, input_ids.shape[1]:], skip_special_tokens=True)[0].strip()
+        return text
+
+    def close(self):
+        del self.model
+        del self.tokenizer
+        import gc
+        gc.collect()
+        self.torch.cuda.empty_cache()
+
+
 class TEOChatBackend:
-    """TEOChat placeholder — requires separate install."""
-    def __init__(self, name='teochat'):
-        raise NotImplementedError("TEOChat backend not yet implemented. "
-                                  "Clone https://github.com/ermongroup/TEOChat and adapt.")
+    """TEOChat multi-image temporal VLM (change detection focus)."""
+    def __init__(self, name='TEOChat', model_path='jirvin16/TEOChat',
+                 teochat_repo=None):
+        import sys, torch
+        self.torch = torch
+        teochat_repo = teochat_repo or os.path.expanduser('~/TEOChat')
+        if not os.path.isdir(teochat_repo):
+            raise RuntimeError(f"TEOChat repo not found at {teochat_repo}. "
+                               "Clone: git clone https://github.com/ermongroup/TEOChat.git ~/TEOChat")
+        sys.path.insert(0, teochat_repo)
+        from videollava.model.builder import load_pretrained_model
+        from videollava.mm_utils import get_model_name_from_path
+
+        print(f"[{name}] Loading {model_path}...")
+        model_name = get_model_name_from_path(model_path)
+        self.tokenizer, self.model, self.processor, _ = load_pretrained_model(
+            model_path, None, model_name, load_8bit=False, load_4bit=False, device='cuda')
+        self.model.eval()
+        self.name = name
+
+    def generate(self, question, image_paths, max_new_tokens=128):
+        from PIL import Image
+        from videollava.conversation import conv_templates, SeparatorStyle
+        from videollava.mm_utils import tokenizer_image_token, KeywordsStoppingCriteria
+        from videollava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
+
+        if not image_paths:
+            return '[ERR: no images]'
+
+        # TEOChat treats sequence of images as a video
+        images = [Image.open(p).convert('RGB') for p in image_paths]
+        # Use image processor — for videollava-based teochat, the image tower processes each frame
+        image_tensor = self.processor['image'](images, return_tensors='pt')['pixel_values']
+        image_tensor = image_tensor.half().cuda()
+
+        qs = DEFAULT_IMAGE_TOKEN * len(images) + '\n' + question
+        conv = conv_templates['llava_v1'].copy()
+        conv.append_message(conv.roles[0], qs)
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
+
+        input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX,
+                                          return_tensors='pt').unsqueeze(0).cuda()
+        stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
+        stopping_criteria = KeywordsStoppingCriteria([stop_str], self.tokenizer, input_ids)
+
+        with self.torch.inference_mode():
+            output_ids = self.model.generate(
+                input_ids, images=image_tensor,
+                do_sample=False, max_new_tokens=max_new_tokens,
+                use_cache=True, stopping_criteria=[stopping_criteria])
+        text = self.tokenizer.batch_decode(
+            output_ids[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        return text.replace(stop_str, '').strip()
+
+    def close(self):
+        del self.model
+        del self.tokenizer
+        import gc
+        gc.collect()
+        self.torch.cuda.empty_cache()
 
 
 # ─── Runner ──────────────────────────────────────────────────────────────────
@@ -356,6 +473,8 @@ def build_backend(name, args):
         return QwenBackend(lora_ckpt=ckpt, name='Ours (Qwen2.5-VL-ft)')
     elif name == 'gemini':
         return GeminiBackend(model_id=args.gemini_model, name=f'Gemini {args.gemini_model}')
+    elif name == 'geochat':
+        return GeoChatBackend()
     elif name == 'teochat':
         return TEOChatBackend()
     else:
