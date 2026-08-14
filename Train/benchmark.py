@@ -382,10 +382,13 @@ def run_model(backend, samples_by_task, ckpt_path=None,
         print(f"\n[{backend.name}] Task: {task} ({len(remaining)} to do, {already_done} done)")
         pairs = results.get(task, [])
         max_tokens = max_new_tokens_open if task == TASK_OPEN else max_new_tokens_mcq
+        is_mcq = task != TASK_OPEN
         for i, s in enumerate(remaining, 1):
             q, gt, imgs = extract_question_and_images(s)
             if not imgs:
                 continue
+            if is_mcq:
+                q = q + "\nAnswer with a single letter (a, b, c, or d)."
             try:
                 pred = backend.generate(q, imgs, max_new_tokens=max_tokens)
             except Exception as e:
