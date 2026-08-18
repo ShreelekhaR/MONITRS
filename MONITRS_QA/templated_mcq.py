@@ -297,51 +297,78 @@ class MultipleChoiceGenerator:
         return formatted_options, correct_label
 
     def create_temporal_grounding_question(self, event_data: Dict) -> Dict:
-        """Create a temporal grounding multiple choice question."""
-        events = event_data['events']
-        if not events or len(events) < 2:
+        """Range-based temporal grounding.
+
+        Ask which pair of consecutive satellite images spans the onset of the event.
+        Correct answer = the (image[i], image[i+1]) range containing the FEMA start_date.
+        Model has to look at images to detect the transition — text alone gives no clue
+        because start_date isn't shown in the question.
+        """
+        image_dates = sorted(event_data.get('image_dates', []))
+        start_date = event_data.get('start_date', '')
+        event_type = event_data.get('event_type', 'event')
+
+        # Need at least 3 image dates for meaningful ranges
+        if len(image_dates) < 3 or not start_date:
             return None
-            
-        # Get all dates from events
-        dates = sorted(list(set(e['date'] for e in events)))
-        if len(dates) < 3:
-            return None
-            
-        # Get event type and description
-        # event_type = self._detect_event_type(events)
-        event_type = event_data['event_type']
-        event_description = self._get_event_description(events)
-        
-        # Find the beginning date of the event
-        beginning_date = self._find_event_beginning_date(events)
-        if not beginning_date:
-            beginning_date = dates[0]
-            
-        # Select template
-        template = random.choice(self.mc_templates["temporal_grounding"]["templates"])
-        
-        # Format dates for display
-        formatted_dates = ", ".join(dates)
-        
-        # Generate question
-        question = template.format(
-            dates=formatted_dates,
-            event_type=event_type,
-            event_description=event_description
-        )
-        
-        # Generate options
+
+        # Find which consecutive image-date pair contains start_date
+        correct_range = None
+        for i in range(len(image_dates) - 1):
+            if image_dates[i] <= start_date < image_dates[i + 1]:
+                correct_range = (image_dates[i], image_dates[i + 1])
+                break
+
+        # If start_date is before all images: "Before all images"
+        # If after all images: skip (bad data)
+        if correct_range is None:
+            if start_date < image_dates[0]:
+                correct_range = ('BEFORE', image_dates[0])
+            else:
+                return None  # start after all images — skip
+
+        # Build ALL consecutive-pair ranges as candidate answers
+        all_ranges = []
+        all_ranges.append(('BEFORE', image_dates[0]))
+        for i in range(len(image_dates) - 1):
+            all_ranges.append((image_dates[i], image_dates[i + 1]))
+        all_ranges.append((image_dates[-1], 'AFTER'))
+
+        def range_str(r):
+            a, b = r
+            if a == 'BEFORE':
+                return f"Before {b}"
+            if b == 'AFTER':
+                return f"After {a}"
+            return f"Between {a} and {b}"
+
+        # Pick 3 wrong ranges + no-event distractor
+        wrong = [r for r in all_ranges if r != correct_range]
+        random.shuffle(wrong)
+        wrong_texts = [range_str(r) for r in wrong[:3]]
+        # Add "no visible change" as always-wrong option
+        wrong_texts.append("No visible change occurred in these images")
+
+        # Options + correct label
         options, correct_label = self._generate_options(
-            beginning_date, 
-            dates + ["No event occurred on these dates"]
+            range_str(correct_range),
+            [range_str(correct_range)] + wrong_texts
         )
-        
+
+        # Question does NOT reveal start_date
+        templates = [
+            f"Between which two satellite image dates does visible evidence of the {event_type} first appear?",
+            f"Looking at this sequence of satellite images, when does the {event_type} become visible?",
+            f"During which interval between the satellite images does the {event_type} onset occur?",
+        ]
+        question = random.choice(templates)
+
         return {
             "type": "temporal_grounding",
             "question": question,
             "options": options,
-            "correct_answer": f"{correct_label}",
-            "explanation": f"The {event_type.lower()} began on {beginning_date} as indicated by the satellite imagery."
+            "correct_answer": correct_label,
+            "explanation": f"The {event_type.lower()} became visible in the interval {range_str(correct_range)}."
         }
 
     def create_event_type_question(self, event_data: Dict) -> Dict:

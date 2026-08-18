@@ -270,6 +270,9 @@ def event_to_v1_format(event_id, event_data):
         'events': sorted(events, key=lambda e: e['date']),
         'event_type': event_data.get('type', 'Unknown'),
         'captions': event_data.get('captions', ''),
+        'start_date': event_data.get('start_date', ''),
+        'end_date': event_data.get('end_date', ''),
+        'image_dates': get_image_dates(event_id),
     }
 
 
