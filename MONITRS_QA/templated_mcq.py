@@ -701,10 +701,12 @@ if __name__ == "__main__":
     event_ids = sorted(all_events.keys(), key=int)
     print(f"Loaded {len(event_ids)} events")
 
-    # 80/20 train/test split
-    split = int(len(event_ids) * 0.8)
-    train_ids = event_ids[:split]
-    test_ids = event_ids[split:]
+    # County-level holdout, stratified by event type
+    from split import get_train_test_ids
+    train_set, test_set = get_train_test_ids()
+    train_ids = [e for e in event_ids if e in train_set]
+    test_ids  = [e for e in event_ids if e in test_set]
+    print(f"Geo-split: {len(train_ids)} train events, {len(test_ids)} test events")
 
     for split_name, ids in [('train', train_ids), ('test', test_ids)]:
         image_paths = {}

@@ -416,9 +416,11 @@ if __name__ == "__main__":
         event_ids = event_ids[:args.limit]
     print(f"Loaded {len(event_ids)} events")
 
-    split = int(len(event_ids) * 0.8)
-    train_ids = event_ids[:split]
-    test_ids = event_ids[split:]
+    from split import get_train_test_ids
+    train_set, test_set = get_train_test_ids()
+    train_ids = [e for e in event_ids if e in train_set]
+    test_ids  = [e for e in event_ids if e in test_set]
+    print(f"Geo-split: {len(train_ids)} train, {len(test_ids)} test")
 
     for split_name, ids in [('train', train_ids), ('test', test_ids)]:
         out_file = f'{split_name}_generated_multiple_choice_q_a.json'
