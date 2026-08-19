@@ -372,31 +372,47 @@ class MultipleChoiceGenerator:
         }
 
     def create_event_type_question(self, event_data: Dict) -> Dict:
-        """Create an event type identification multiple choice question."""
+        """Event-type MCQ with visually-similar (confusable) distractors."""
         events = event_data['events']
         if not events:
             return None
-            
-        # Detect event type
-        # event_type = self._detect_event_type(events)
+
         event_type = event_data['event_type']
         if "disaster" in event_type.lower():
             return None
-            
-        # Select template
+
+        # Confusable groups — hurricanes/floods look wet, fires/heat look brown,
+        # storms/winds have subtle damage patterns.
+        CONFUSABLE = {
+            'Hurricane':       ['Tropical Storm', 'Coastal Storm', 'Flood'],
+            'Tropical Storm':  ['Hurricane', 'Coastal Storm', 'Flood'],
+            'Coastal Storm':   ['Hurricane', 'Tropical Storm', 'Flood'],
+            'Flood':           ['Hurricane', 'Tropical Storm', 'Severe Storm'],
+            'Severe Storm':    ['Tornado', 'Severe Storm(s)', 'Coastal Storm'],
+            'Severe Storm(s)': ['Tornado', 'Severe Storm', 'Coastal Storm'],
+            'Tornado':         ['Severe Storm', 'Severe Storm(s)', 'Hurricane'],
+            'Fire':            ['Landslide', 'Volcanic Eruption', 'Flood'],
+            'Severe Ice Storm':['Snowstorm', 'Winter Storm', 'Severe Storm'],
+            'Snowstorm':       ['Severe Ice Storm', 'Winter Storm', 'Severe Storm'],
+            'Winter Storm':    ['Severe Ice Storm', 'Snowstorm', 'Severe Storm'],
+            'Typhoon':         ['Hurricane', 'Tropical Storm', 'Coastal Storm'],
+            'Landslide':       ['Flood', 'Fire', 'Hurricane'],
+            'Earthquake':      ['Landslide', 'Volcanic Eruption', 'Tornado'],
+            'Volcanic Eruption': ['Fire', 'Earthquake', 'Landslide'],
+            'Dam':             ['Flood', 'Hurricane', 'Severe Storm'],
+            'Other':           ['Severe Storm', 'Flood', 'Hurricane'],
+        }
+        distractors = CONFUSABLE.get(event_type, [t for t in self.event_types if t != event_type][:3])
+
         template = random.choice(self.mc_templates["event_type"]["templates"])
-        
-        # Generate question
-        question = template
-        
-        # Generate options - use all event types as the option pool
-        options, correct_label = self._generate_options(event_type, self.event_types)
-        
+        options, correct_label = self._generate_options(
+            event_type, [event_type] + distractors[:3])
+
         return {
             "type": "event_type",
-            "question": question,
+            "question": template,
             "options": options,
-            "correct_answer": f"{correct_label}",
+            "correct_answer": correct_label,
             "explanation": f"The satellite images show a {event_type.lower()} event."
         }
 
