@@ -243,7 +243,8 @@ def event_to_v1_format(event_id, event_data):
     # Geocode article locations and keep only those inside bbox
     halfwidth = event_data.get('halfwidth', 0.05)
     locations = {}
-    if os.environ.get('ENABLE_LOCATION_QA') and GEOCODE_API_KEY:
+    if os.environ.get('ENABLE_LOCATION_QA'):
+        # Nominatim runs locally, no API key needed. geocode.maps.co is fallback.
         locations = geocode_event_locations(event_data, halfwidth)
 
     # Build events list from location_events
