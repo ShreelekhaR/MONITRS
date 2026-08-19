@@ -20,7 +20,8 @@ FACTS_PATH = 'Data/article_facts.json'
 
 
 PROMPT = """You are given a target disaster event and a news article.
-First decide whether the article is actually about THAT event. Then extract facts.
+Decide whether the article reports on THAT specific local event, then extract
+only facts scoped to the target county.
 
 TARGET EVENT:
   name:   {event_name}
@@ -35,29 +36,44 @@ Return STRICT JSON only (no prose, no markdown fence):
   "relevance_reason": "",
   "extent_number": null,
   "extent_unit": null,
+  "extent_scope": null,
   "extent_as_of_date": null,
   "contained_pct": null,
   "affected_features": [],
   "notable_dates": {"start": null, "peak": null, "contained": null}
 }
 
-Field rules:
-- is_about_target_event: true ONLY if the article describes the SAME incident —
-  same disaster, same general place, same time window. Set false if it's a
-  different fire/storm, a different state, a different year, a generic
-  explainer, a site index page, or a page that has since been updated to cover
-  a newer incident. When false, leave all other fields null/empty.
-- relevance_reason: one short sentence justifying your true/false call.
-- extent_number / extent_unit: size of the impact. unit ∈
-  {"acres","sq_miles","structures","homes"}. Use the LARGEST clearly-stated figure.
+CRITICAL — SCOPE. Many articles about a regional disaster report STATEWIDE or
+MULTI-COUNTY totals. Those numbers are useless for a satellite image of one
+county. So:
+- "extent_scope" must be one of "local", "regional", "statewide", "national".
+  "local"    = the figure describes {county} County or a single named incident
+               inside it.
+  "regional" = several counties, a whole basin, or a named multi-county complex.
+  "statewide"/"national" = the figure aggregates the whole state or country.
+- Set extent_number ONLY when extent_scope is "local". If the article only gives
+  a regional or statewide total, still record extent_scope, but leave
+  extent_number and extent_unit null.
+- Example: for a target of Klamath County, "the Two Four Two Fire has burned
+  10,000 acres" is local. "Oregon wildfires have burned over 1 million acres"
+  is statewide -> do NOT put 1000000 in extent_number.
+
+Other fields:
+- is_about_target_event: true only if the article describes the SAME incident —
+  same disaster, same general place, same time window. False for a different
+  fire/storm, different state, different year, generic explainer, site index, or
+  a page since updated to cover a newer incident.
+- extent_unit ∈ {"acres","sq_miles","structures","homes"}.
 - extent_as_of_date: the date that figure describes (YYYY-MM-DD). Resolve
   relative phrases ("as of Wednesday") against the publication date. If unclear,
   use the publication date.
-- contained_pct: fire containment percent (0-100), null if not a fire.
+- contained_pct: fire containment percent (0-100), null if not a fire. Only when
+  it refers to the local incident.
 - affected_features: NAMED physical things visible from ~10m satellite imagery
   that the article says were affected — roads/highways, rivers, lakes, forests,
   airports, ports, named neighborhoods, named ridges or mountains.
-  They must be plausibly within or near {county} County, {state}.
+  They MUST be inside or immediately adjacent to {county} County, {state}.
+  Do NOT list features from elsewhere in the state.
   EXCLUDE: people, dollar amounts, agencies, generic phrases.
 - notable_dates: when the event started / peaked / was contained (YYYY-MM-DD).
 

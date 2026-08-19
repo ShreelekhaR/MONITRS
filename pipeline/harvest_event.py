@@ -33,6 +33,7 @@ from search_articles import (build_queries, search_ddg, domain_of,
                              SKIP_DOMAINS, month_year, year_of)
 from scrape_articles import scrape_one
 from extract_facts_from_scrape import PROMPT, call
+from validate_features import validate_features
 
 
 EVENTS_PATH = 'Data/events_processed.json'
@@ -42,15 +43,21 @@ HARVEST_DIR = 'Data/harvest'
 # ── coverage scoring ────────────────────────────────────────────────────────
 
 def coverage(facts):
-    """What fraction of the target fact set do we have?"""
+    """What fraction of the target fact set do we have?
+
+    Only counts LOCAL-scope extent figures — statewide/regional aggregates are
+    the wrong order of magnitude for a single-county image chip.
+    """
     rel = [f for f in facts if f.get('is_about_target_event')]
-    has_extent = any(f.get('extent_number') for f in rel)
+    local = [f for f in rel if f.get('extent_scope') in (None, 'local')]
+    has_extent = any(f.get('extent_number') for f in local)
     has_start = any((f.get('notable_dates') or {}).get('start') for f in rel)
-    has_feats = any(f.get('affected_features') for f in rel)
+    has_feats = any(f.get('validated_features') for f in rel)
     multi_date = len({f.get('extent_as_of_date') or f.get('pub_date')
-                      for f in rel if f.get('extent_number')}) >= 2
+                      for f in local if f.get('extent_number')}) >= 2
     return {
         'n_relevant': len(rel),
+        'n_local_extent': sum(1 for f in local if f.get('extent_number')),
         'has_extent': has_extent,
         'has_start_date': has_start,
         'has_features': has_feats,
@@ -132,6 +139,35 @@ def verify_and_extract(url, page, event_meta, client, model_id):
     f['domain'] = page.get('domain')
     f['pub_date'] = page.get('pub_date')
     f['title'] = page.get('title')
+
+    # Drop non-local extent figures — statewide/regional totals are the wrong
+    # order of magnitude for a single-county image chip.
+    scope = f.get('extent_scope')
+    if scope and scope != 'local' and f.get('extent_number'):
+        f['rejected_extent'] = {
+            'value': f.get('extent_number'),
+            'unit': f.get('extent_unit'),
+            'scope': scope,
+        }
+        f['extent_number'] = None
+        f['extent_unit'] = None
+
+    # Spatially validate named features against the event bbox
+    names = f.get('affected_features') or []
+    if names and f.get('is_about_target_event'):
+        kept, dropped = validate_features(
+            names,
+            event_meta.get('center'),
+            event_meta.get('halfwidth', 0.05),
+            state=event_meta.get('state', ''),
+            county=(event_meta.get('county') or '').split('(')[0].strip(),
+        )
+        f['validated_features'] = kept
+        f['dropped_features'] = dropped
+    else:
+        f['validated_features'] = []
+        f['dropped_features'] = []
+
     return f
 
 
@@ -192,10 +228,13 @@ def harvest(eid, event, client, model_id='gemini-2.5-flash-lite',
                 facts.append(fut.result())
 
         cov = coverage(facts)
+        n_scope_rej = sum(1 for f in facts if f.get('rejected_extent'))
+        n_geo_rej = sum(len(f.get('dropped_features') or []) for f in facts)
         log(f'  coverage {cov["score"]:.2f} '
             f'(relevant={cov["n_relevant"]} extent={cov["has_extent"]} '
             f'start={cov["has_start_date"]} feats={cov["has_features"]} '
-            f'ts={cov["has_extent_timeseries"]})')
+            f'ts={cov["has_extent_timeseries"]}) '
+            f'| filtered: {n_scope_rej} non-local extents, {n_geo_rej} off-bbox features')
 
         if cov['score'] >= target_score:
             log('target coverage reached')
