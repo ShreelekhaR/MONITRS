@@ -61,33 +61,40 @@ def coverage(facts):
 
 def gap_queries(event, cov, already_used):
     """Extra query angles targeting whatever's still missing."""
+    from search_articles import place_phrase, clean_county, STATE_NAMES
     etype = (event.get('type') or '').lower()
-    state = (event.get('state') or '').strip()
-    county = (event.get('county') or '').strip()
+    state_abbr = (event.get('state') or '').strip()
+    state = STATE_NAMES.get(state_abbr.upper(), state_abbr)
+    county_bare, _ = clean_county(event.get('county'))
+    place = place_phrase(event.get('county'), state_abbr)
     title = (event.get('event') or '').title()
     yr = year_of(event.get('start_date') or '')
     my = month_year(event.get('start_date') or '')
-    place = f'"{county} County" {state}' if county else state
 
     out = []
     if not cov['has_extent']:
         if etype == 'fire':
-            out += [f'{place} fire acres burned {yr}',
-                    f'{title} {state} acres {yr}']
-        elif etype in ('flood', 'severe storm', 'hurricane', 'tropical storm'):
+            out += [f'{place} wildfire acres burned {yr}',
+                    f'{county_bare} {state} fire perimeter acres {yr}']
+        elif etype in ('flood', 'severe storm', 'hurricane', 'tropical storm',
+                       'coastal storm'):
             out += [f'{place} flooding homes damaged {yr}',
                     f'{place} {etype} damage assessment {yr}']
+        elif etype in ('snowstorm', 'severe ice storm', 'winter storm'):
+            out += [f'{place} snowfall inches {my}',
+                    f'{place} winter storm power outages {yr}']
         else:
             out += [f'{place} {etype} damage assessment {yr}']
     if not cov['has_extent_timeseries']:
         out += [f'{place} {etype} update {my}',
-                f'{place} {etype} latest {my}']
+                f'{county_bare} {state} storm report {my}']
     if not cov['has_features']:
-        out += [f'{place} {etype} road closed {yr}',
+        out += [f'{place} {etype} highway closed {yr}',
                 f'{place} {etype} river bridge damage {yr}']
     if cov['n_relevant'] < 3:
-        out += [f'site:weather.gov {county} {state} {yr}',
-                f'{place} disaster declaration {yr}']
+        out += [f'site:weather.gov {county_bare} {state} {yr}',
+                f'{place} FEMA disaster declaration {yr}',
+                f'{title} {state} news {yr}']
 
     return [q for q in out if q and q not in already_used]
 

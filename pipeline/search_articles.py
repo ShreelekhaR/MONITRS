@@ -34,12 +34,66 @@ SKIP_DOMAINS = {
     'twitter.com', 'x.com', 'instagram.com', 'tiktok.com', 'pinterest.com',
     'irs.gov', 'guycarp.com', 'augurisk.com', 'ladrc.org', 'linkedin.com',
     'amazon.com', 'ebay.com', 'zillow.com', 'realtor.com', 'tripadvisor.com',
+    # generic place/demographic pages that match county names but carry no
+    # event information — these dominated results for weakly-named events
+    'maps.apple.com', 'mapsof.net', 'city-data.com', 'rentometer.com',
+    'nursinghomes.com', 'niche.com', 'bestplaces.net', 'areavibes.com',
+    'homes.com', 'redfin.com', 'trulia.com', 'apartments.com',
+    'census.gov', 'usa.com', 'zip-codes.com', 'countyoffice.org',
+    'yelp.com', 'mapquest.com', 'google.com', 'bing.com',
 }
 
 # Named-storm patterns that appear in FEMA declaration titles
 NAMED_STORM_RE = re.compile(
     r'\b(HURRICANE|TROPICAL STORM|TYPHOON|TROPICAL DEPRESSION)\s+([A-Z][A-Z\-]+)\b')
 NAMED_FIRE_RE = re.compile(r'\b([A-Z][A-Za-z\-]+(?:\s+[A-Z][A-Za-z\-]+)?)\s+FIRE\b')
+
+
+STATE_NAMES = {
+    'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
+    'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
+    'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
+    'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
+    'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
+    'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
+    'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
+    'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
+    'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
+    'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island', 'SC': 'South Carolina',
+    'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
+    'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
+    'WI': 'Wisconsin', 'WY': 'Wyoming', 'PR': 'Puerto Rico', 'VI': 'Virgin Islands',
+    'GU': 'Guam', 'AS': 'American Samoa', 'MP': 'Northern Mariana Islands',
+    'DC': 'District of Columbia',
+}
+
+# FEMA county strings carry a parenthetical designator, e.g.
+#   "Klamath (County)", "Petersburg (Borough)", "St. Croix (Island)"
+# Strip it and remember the designator so we can phrase the query naturally.
+COUNTY_DESIGNATOR_RE = re.compile(r'\s*\(([^)]+)\)\s*$')
+
+
+def clean_county(raw):
+    """('Klamath (County)') -> ('Klamath', 'County').
+
+    Returns (bare_name, designator). Designator defaults to 'County'.
+    """
+    if not raw:
+        return '', 'County'
+    raw = raw.strip()
+    m = COUNTY_DESIGNATOR_RE.search(raw)
+    if m:
+        return COUNTY_DESIGNATOR_RE.sub('', raw).strip(), m.group(1).strip()
+    return raw, 'County'
+
+
+def place_phrase(raw_county, state_abbr):
+    """Natural search phrase: '"Klamath County" Oregon'."""
+    bare, desig = clean_county(raw_county)
+    state = STATE_NAMES.get((state_abbr or '').strip().upper(), state_abbr or '')
+    if bare:
+        return f'"{bare} {desig}" {state}'.strip()
+    return state
 
 
 def month_year(date_str):
@@ -61,8 +115,10 @@ def build_queries(event):
     """Targeted query variants for one event. Most specific first."""
     title = (event.get('event') or '').strip()
     etype = (event.get('type') or '').strip()
-    state = (event.get('state') or '').strip()
-    county = (event.get('county') or '').strip()
+    state_abbr = (event.get('state') or '').strip()
+    state = STATE_NAMES.get(state_abbr.upper(), state_abbr)
+    county_bare, desig = clean_county(event.get('county'))
+    place = place_phrase(event.get('county'), state_abbr)
     start = event.get('start_date') or ''
     my = month_year(start)
     yr = year_of(start)
@@ -73,26 +129,26 @@ def build_queries(event):
     m = NAMED_STORM_RE.search(title.upper())
     if m:
         storm = f'{m.group(1).title()} {m.group(2).title()}'
-        if county:
-            queries.append(f'"{storm}" "{county} County" {state} damage')
+        if county_bare:
+            queries.append(f'"{storm}" {place} damage')
         queries.append(f'"{storm}" {state} damage {yr}')
     mf = NAMED_FIRE_RE.search(title.upper())
     if mf and etype == 'Fire':
         fire = f'{mf.group(1).title()} Fire'
         queries.append(f'"{fire}" acres contained {yr}')
-        if county:
-            queries.append(f'"{fire}" "{county} County" {state}')
+        if county_bare:
+            queries.append(f'"{fire}" {place}')
 
-    # 2. County + state + type + month/year — the core geographic anchor
-    if county and state:
-        queries.append(f'"{county} County" {state} {etype.lower()} {my}')
-        queries.append(f'"{county} County" {state} {etype.lower()} damage {yr}')
+    # 2. Place + type + month/year — the core geographic anchor
+    if place:
+        queries.append(f'{place} {etype.lower()} {my}')
+        queries.append(f'{place} {etype.lower()} damage {yr}')
 
     # 3. Authoritative-domain hints
-    if county and state:
-        queries.append(f'site:weather.gov {county} County {state} {etype.lower()} {yr}')
-    if etype == 'Fire':
-        queries.append(f'site:inciweb.wildfire.gov {title.title()} {yr}')
+    if county_bare:
+        queries.append(f'site:weather.gov {county_bare} {desig} {state} {etype.lower()} {yr}')
+    if etype == 'Fire' and county_bare:
+        queries.append(f'site:inciweb.wildfire.gov {county_bare} {state} fire {yr}')
 
     # 4. Fallback: raw title + place + year
     if state:
