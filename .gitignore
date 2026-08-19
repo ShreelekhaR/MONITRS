@@ -1,4 +1,4 @@
-/Data
+*.jpeg
 *.jpg
 *.png
-*.jpeg
+/Data
