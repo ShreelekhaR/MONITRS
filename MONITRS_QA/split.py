@@ -108,8 +108,8 @@ def print_split_stats():
         print(f"{etype:<25} {tr:>13} {te:>13} {tc:>16} {tec:>15}")
 
     # Sanity: county-disjointness
-    all_train_counties = set().union(*counties_per_type[t]['train'] for t in counties_per_type)
-    all_test_counties  = set().union(*counties_per_type[t]['test']  for t in counties_per_type)
+    all_train_counties = set().union(*(counties_per_type[t]['train'] for t in counties_per_type))
+    all_test_counties  = set().union(*(counties_per_type[t]['test']  for t in counties_per_type))
     overlap = all_train_counties & all_test_counties
     print(f"\nCounty overlap between train and test: {len(overlap)} (should be 0)")
 
