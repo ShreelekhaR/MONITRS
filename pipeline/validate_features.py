@@ -106,15 +106,18 @@ def _save():
 
 
 def geocode(name, state_abbr='', county=''):
-    """Return (lat, lon) or (None, None)."""
+    """Return (lat, lon, bbox) where bbox is (south, north, west, east) or None."""
     cache = _load()
     state = STATE_NAMES.get((state_abbr or '').upper(), state_abbr or '')
     key = f'{name}|{county}|{state}'
     if key in cache:
         v = cache[key]
-        return (v[0], v[1]) if v else (None, None)
+        if not v:
+            return None, None, None
+        if len(v) == 2:            # legacy cache entry, no bbox
+            return v[0], v[1], None
+        return v[0], v[1], v[2]
 
-    # Try most-specific query first
     queries = []
     if county and state:
         queries.append(f'{name}, {county} County, {state}')
@@ -138,31 +141,39 @@ def geocode(name, state_abbr='', county=''):
                 data = r.json()
                 if data:
                     lat, lon = float(data[0]['lat']), float(data[0]['lon'])
-                    cache[key] = [lat, lon]
+                    bb = data[0].get('boundingbox')
+                    bbox = [float(x) for x in bb] if bb and len(bb) == 4 else None
+                    cache[key] = [lat, lon, bbox]
                     _save()
-                    return lat, lon
+                    return lat, lon, bbox
             except Exception:
                 continue
 
     cache[key] = None
     _save()
-    return None, None
+    return None, None, None
+
+
+def _boxes_overlap(a, b):
+    """a, b = (south, north, west, east). True if they intersect."""
+    return not (a[1] < b[0] or a[0] > b[1] or a[3] < b[2] or a[2] > b[3])
 
 
 def validate_features(names, center, halfwidth=0.05, state='', county='',
                       slack=1.5):
-    """Split feature names into (inside_bbox, outside_or_ungeocodable).
+    """Split feature names into (inside_chip, outside_or_ungeocodable).
 
-    slack widens the acceptance box slightly, since a river or highway is a long
-    line whose geocoded centroid may sit just outside the chip while the feature
-    itself still crosses it.
+    A feature counts as inside when its OSM bounding box intersects the image
+    chip. Centroid distance alone rejects long linear features — a highway or
+    river crossing the chip can have a centroid 10-20 km away.
 
-    Returns (kept, dropped) where each item is a dict with name/lat/lon/reason.
+    slack widens the chip slightly to tolerate geocoding imprecision.
+
+    Returns (kept, dropped); items carry name/lat/lon and a reason when dropped.
     """
     if not center:
         return [], [{'name': n, 'reason': 'no event center'} for n in names]
 
-    # If no geocoder is reachable, don't silently delete every feature.
     if not geocoder_available():
         return ([{'name': n, 'lat': None, 'lon': None, 'unvalidated': True}
                  for n in names if (n or '').strip()],
@@ -171,22 +182,31 @@ def validate_features(names, center, halfwidth=0.05, state='', county='',
 
     clat, clon = center[0], center[1]
     hw = halfwidth * slack
+    chip = (clat - hw, clat + hw, clon - hw, clon + hw)  # s, n, w, e
     kept, dropped = [], []
 
     for raw in names:
         name = (raw or '').strip()
         if not name:
             continue
-        lat, lon = geocode(name, state, county)
+        lat, lon, bbox = geocode(name, state, county)
         if lat is None:
             dropped.append({'name': name, 'reason': 'not geocodable'})
             continue
-        dlat, dlon = abs(lat - clat), abs(lon - clon)
-        if dlat <= hw and dlon <= hw:
-            kept.append({'name': name, 'lat': lat, 'lon': lon})
+
+        inside = False
+        how = ''
+        if bbox and _boxes_overlap(bbox, chip):
+            inside, how = True, 'bbox overlaps chip'
+        elif (abs(lat - clat) <= hw and abs(lon - clon) <= hw):
+            inside, how = True, 'centroid in chip'
+
+        if inside:
+            kept.append({'name': name, 'lat': lat, 'lon': lon,
+                         'bbox': bbox, 'match': how})
         else:
-            # rough km for readability
-            km = ((dlat * 111.0) ** 2 + (dlon * 111.0) ** 2) ** 0.5
+            km = ((abs(lat - clat) * 111.0) ** 2 +
+                  (abs(lon - clon) * 111.0) ** 2) ** 0.5
             dropped.append({'name': name, 'lat': lat, 'lon': lon,
                             'reason': f'{km:.0f} km from center'})
     return kept, dropped
