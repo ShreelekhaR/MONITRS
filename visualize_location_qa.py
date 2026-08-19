@@ -20,6 +20,10 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Circle, Rectangle
+import math
+import io
+import urllib.request
+from PIL import Image as PILImage
 
 
 CKPT_DIR = 'benchmark_ckpts'
@@ -33,6 +37,58 @@ MODEL_COLORS = {
     'qwen-ft':   '#2ecc71',
     'gemini':    '#3498db',
 }
+
+
+def latlon_to_tile(lat, lon, zoom):
+    """OSM slippy tile x, y (float) for lat/lon at zoom."""
+    n = 2 ** zoom
+    xt = (lon + 180.0) / 360.0 * n
+    lat_rad = math.radians(lat)
+    yt = (1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2 * n
+    return xt, yt
+
+
+def tile_to_latlon(x, y, zoom):
+    n = 2 ** zoom
+    lon = x / n * 360.0 - 180.0
+    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
+    return math.degrees(lat_rad), lon
+
+
+def fetch_osm_map(center_lat, center_lon, zoom=13, tile_size=256, grid=3):
+    """Fetch a grid x grid tile mosaic centered on (lat, lon). Return (PIL image, extent_latlon).
+    extent_latlon = (west_lon, east_lon, south_lat, north_lat)
+    """
+    xt, yt = latlon_to_tile(center_lat, center_lon, zoom)
+    x0 = int(xt) - grid // 2
+    y0 = int(yt) - grid // 2
+
+    canvas = PILImage.new('RGB', (tile_size * grid, tile_size * grid), 'white')
+    for dy in range(grid):
+        for dx in range(grid):
+            tx, ty = x0 + dx, y0 + dy
+            url = f'https://tile.openstreetmap.org/{zoom}/{tx}/{ty}.png'
+            try:
+                req = urllib.request.Request(url, headers={'User-Agent': 'MONITRS-viz/1.0'})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    tile = PILImage.open(io.BytesIO(r.read())).convert('RGB')
+                canvas.paste(tile, (dx * tile_size, dy * tile_size))
+            except Exception:
+                pass
+
+    # Compute lat/lon extent
+    nw_lat, nw_lon = tile_to_latlon(x0, y0, zoom)
+    se_lat, se_lon = tile_to_latlon(x0 + grid, y0 + grid, zoom)
+    extent = (nw_lon, se_lon, se_lat, nw_lat)
+    return canvas, extent
+
+
+def parse_location_latlon(q):
+    """Extract (lat, lon) from question like 'Where is X (18.22, -66.43)?'"""
+    m = re.search(r'Where is .+?\s*\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)', q)
+    if m:
+        return float(m.group(1)), float(m.group(2))
+    return None, None
 
 
 def get_first_event_image(eid):
@@ -99,41 +155,34 @@ def visualize_sample(sample, preds_at_index, out_path):
         return False
 
     loc_name = parse_location_name(q)
+    loc_lat, loc_lon = parse_location_latlon(q)
     eid = str(sample.get('folder_id', ''))
     img_path = get_first_event_image(eid)
     if not img_path:
         return False
 
-    fig, ax = plt.subplots(figsize=(10, 10))
+    fig, (ax_sat, ax_map) = plt.subplots(1, 2, figsize=(18, 9))
+
+    # ── LEFT: satellite chip with option pixels + GT + predictions ──
     img = mpimg.imread(img_path)
-    ax.imshow(img, extent=[0, 512, 512, 0])
-    # Zoom to fit image + any off-chip options
+    ax_sat.imshow(img, extent=[0, 512, 512, 0])
     all_xs = [x for x, _ in options.values()]
     all_ys = [y for _, y in options.values()]
     pad = 20
-    xmin = min(0, min(all_xs)) - pad
-    xmax = max(512, max(all_xs)) + pad
-    ymin = min(0, min(all_ys)) - pad
-    ymax = max(512, max(all_ys)) + pad
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(ymax, ymin)
+    ax_sat.set_xlim(min(0, min(all_xs)) - pad, max(512, max(all_xs)) + pad)
+    ax_sat.set_ylim(max(512, max(all_ys)) + pad, min(0, min(all_ys)) - pad)
 
-    # Image boundary
-    ax.add_patch(Rectangle((0, 0), 512, 512, fill=False, edgecolor='gray',
-                            linewidth=1, linestyle='--'))
-
-    # Draw all 4 options as small gray dots with letter labels
+    ax_sat.add_patch(Rectangle((0, 0), 512, 512, fill=False, edgecolor='gray',
+                                linewidth=1, linestyle='--'))
     for letter, (x, y) in options.items():
-        ax.plot(x, y, 'o', color='#888', markersize=6, alpha=0.6)
-        ax.annotate(letter.upper(), (x, y), fontsize=10, color='#333',
-                    xytext=(6, -6), textcoords='offset points', fontweight='bold')
+        ax_sat.plot(x, y, 'o', color='#888', markersize=6, alpha=0.6)
+        ax_sat.annotate(letter.upper(), (x, y), fontsize=10, color='#333',
+                        xytext=(6, -6), textcoords='offset points', fontweight='bold')
 
-    # Ground truth — big green ring
     gx, gy = options[gt_letter]
-    ax.plot(gx, gy, 'o', color='#0a0', markersize=20, markerfacecolor='none',
-            markeredgewidth=3, label=f'GT ({gt_letter.upper()})')
+    ax_sat.plot(gx, gy, 'o', color='#0a0', markersize=20, markerfacecolor='none',
+                markeredgewidth=3)
 
-    # Model predictions
     legend_items = []
     for name in MODEL_ORDER:
         if name not in preds_at_index:
@@ -144,18 +193,37 @@ def visualize_sample(sample, preds_at_index, out_path):
         if pl and pl in options:
             px, py = options[pl]
             marker = 'X' if pl == gt_letter else 'x'
-            ax.plot(px, py, marker, color=color, markersize=16, markeredgewidth=3)
+            ax_sat.plot(px, py, marker, color=color, markersize=16, markeredgewidth=3)
             legend_items.append(f'{name}: {pl.upper()} {"✓" if pl == gt_letter else "✗"}')
         else:
             legend_items.append(f'{name}: no answer ({pred_text[:30]})')
 
-    ax.set_title(f'Event {eid}: "{loc_name}"\n{" | ".join(legend_items)}',
-                  fontsize=11)
-    ax.set_xlabel('pixel x')
-    ax.set_ylabel('pixel y')
-    ax.grid(True, alpha=0.2)
+    ax_sat.set_title('Satellite chip + option pixels', fontsize=11)
+    ax_sat.set_xlabel('pixel x')
+    ax_sat.set_ylabel('pixel y')
+    ax_sat.grid(True, alpha=0.2)
 
-    plt.tight_layout()
+    # ── RIGHT: OSM map showing lat/lon of the location ──
+    if loc_lat is not None and loc_lon is not None:
+        try:
+            osm_img, extent = fetch_osm_map(loc_lat, loc_lon, zoom=12, grid=3)
+            ax_map.imshow(osm_img, extent=extent, origin='upper')
+            ax_map.plot(loc_lon, loc_lat, 'o', color='#0a0', markersize=20,
+                        markerfacecolor='none', markeredgewidth=3)
+            ax_map.plot(loc_lon, loc_lat, 'x', color='#0a0', markersize=12, markeredgewidth=2)
+            ax_map.set_title(f'OSM map @ ({loc_lat:.4f}, {loc_lon:.4f})', fontsize=11)
+            ax_map.set_xlabel('longitude')
+            ax_map.set_ylabel('latitude')
+        except Exception as e:
+            ax_map.text(0.5, 0.5, f'Map fetch failed:\n{e}',
+                        ha='center', va='center', transform=ax_map.transAxes)
+    else:
+        ax_map.text(0.5, 0.5, 'No lat/lon in question',
+                    ha='center', va='center', transform=ax_map.transAxes)
+
+    fig.suptitle(f'Event {eid}: "{loc_name}"\n{" | ".join(legend_items)}',
+                 fontsize=12, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
     plt.savefig(out_path, dpi=100, bbox_inches='tight')
     plt.close(fig)
     return True

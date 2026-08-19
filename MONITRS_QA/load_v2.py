@@ -102,18 +102,36 @@ def _save_geocode_cache():
         json.dump(_geocode_cache, open(GEOCODE_CACHE_FILE, 'w'), indent=2)
 
 
-def geocode_location(loc_name, state=''):
+VISIBLE_POI_CLASSES = {
+    'amenity', 'building', 'leisure', 'natural', 'tourism',
+    'historic', 'aeroway', 'shop', 'waterway', 'landuse',
+    'place', 'man_made',
+}
+# Broad admin types we want to skip for concept-dependent QA
+ADMIN_TYPES = {'administrative', 'county', 'state', 'country', 'region'}
+
+
+def geocode_location(loc_name, state='', prefer_poi=True):
+    """Return (lat, lon, is_poi). is_poi is True when the result is a visible
+    landmark class (park, school, building, lake, etc.) rather than an
+    administrative boundary."""
     cache = _load_geocode_cache()
     cache_key = f"{loc_name}|{state}"
     if cache_key in cache:
-        return cache[cache_key]
+        v = cache[cache_key]
+        # Backward compat: old cache had 2-tuples
+        if isinstance(v, list) and len(v) == 2:
+            return v[0], v[1], False
+        if isinstance(v, list) and len(v) == 3:
+            return v[0], v[1], v[2]
+        return None, None, False
 
     state_full = STATE_NAMES.get(state, state)
     query = f"{loc_name}, {state_full}" if state_full else loc_name
 
-    # Try local Nominatim first (no rate limit), then geocode.maps.co
     endpoints = [
-        (f'{NOMINATIM_URL}/search', {'q': query, 'format': 'json', 'limit': 5}),
+        (f'{NOMINATIM_URL}/search',
+         {'q': query, 'format': 'json', 'limit': 10, 'addressdetails': 0, 'extratags': 0}),
     ]
     if GEOCODE_API_KEY:
         endpoints.append(
@@ -129,20 +147,35 @@ def geocode_location(loc_name, state=''):
             data = resp.json()
             if not data:
                 continue
-            for r in data:
-                if state_full.lower() in r.get('display_name', '').lower():
-                    result = (float(r['lat']), float(r['lon']))
-                    cache[cache_key] = result
+            # Filter to results whose display_name mentions the state
+            in_state = [r for r in data
+                        if state_full.lower() in r.get('display_name', '').lower()] or data
+
+            # Score each result: prefer POI classes over admin
+            def is_poi(r):
+                c = (r.get('class') or '').lower()
+                t = (r.get('type') or '').lower()
+                if t in ADMIN_TYPES or c == 'boundary':
+                    return False
+                return c in VISIBLE_POI_CLASSES
+
+            if prefer_poi:
+                pois = [r for r in in_state if is_poi(r)]
+                if pois:
+                    r = pois[0]
+                    result = (float(r['lat']), float(r['lon']), True)
+                    cache[cache_key] = list(result)
                     return result
-            if 'United States' in data[0].get('display_name', ''):
-                result = (float(data[0]['lat']), float(data[0]['lon']))
-                cache[cache_key] = result
-                return result
+
+            r = in_state[0]
+            result = (float(r['lat']), float(r['lon']), is_poi(r))
+            cache[cache_key] = list(result)
+            return result
         except Exception:
             continue
 
-    cache[cache_key] = (None, None)
-    return None, None
+    cache[cache_key] = [None, None, False]
+    return None, None, False
 
 
 def _fuzzy_match(article_loc, osm_name):
@@ -225,9 +258,13 @@ def geocode_event_locations(event_data, halfwidth=0.05):
     if not loc_names:
         return {}
 
+    prefer_poi = os.environ.get('POI_ONLY_LOCATIONS', '1') == '1'
     for loc_name in loc_names:
-        lat, lon = geocode_location(loc_name, state)
+        lat, lon, is_poi = geocode_location(loc_name, state, prefer_poi=prefer_poi)
         if lat is None:
+            continue
+        # Skip admin-only results if POI mode is on
+        if prefer_poi and not is_poi:
             continue
         if (abs(lat - center[0]) <= halfwidth and abs(lon - center[1]) <= halfwidth):
             locations[loc_name] = (lat, lon)
