@@ -107,8 +107,16 @@ def visualize_sample(sample, preds_at_index, out_path):
     fig, ax = plt.subplots(figsize=(10, 10))
     img = mpimg.imread(img_path)
     ax.imshow(img, extent=[0, 512, 512, 0])
-    ax.set_xlim(-100, 612)  # room to show off-image options
-    ax.set_ylim(612, -100)
+    # Zoom to fit image + any off-chip options
+    all_xs = [x for x, _ in options.values()]
+    all_ys = [y for _, y in options.values()]
+    pad = 20
+    xmin = min(0, min(all_xs)) - pad
+    xmax = max(512, max(all_xs)) + pad
+    ymin = min(0, min(all_ys)) - pad
+    ymax = max(512, max(all_ys)) + pad
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymax, ymin)
 
     # Image boundary
     ax.add_patch(Rectangle((0, 0), 512, 512, fill=False, edgecolor='gray',

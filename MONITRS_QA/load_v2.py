@@ -274,6 +274,7 @@ def event_to_v1_format(event_id, event_data):
         'start_date': event_data.get('start_date', ''),
         'end_date': event_data.get('end_date', ''),
         'image_dates': get_image_dates(event_id),
+        'halfwidth': event_data.get('halfwidth', 0.05),
     }
 
 

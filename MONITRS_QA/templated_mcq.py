@@ -9,24 +9,20 @@ from copy import deepcopy
 import pandas as pd
 
 # Reuse the existing geo_to_pixel function
-def geo_to_pixel(locations, center, radius=5):
-    """Convert geographical coordinates to pixel coordinates using Sentinel-2 GSD."""
-    import math
-    height = 512
-    width = 512
-    gsd_meters = 10.0
-    center_lat, center_lon = center
+def geo_to_pixel(locations, center, halfwidth=0.05, img_size=512):
+    """Convert geographical coordinates to pixel coordinates.
 
-    meters_per_degree_lat = 111320.0
-    meters_per_degree_lon = 111320.0 * math.cos(math.radians(center_lat))
+    Our Sentinel-2 chips cover ±halfwidth degrees around center, resampled to
+    img_size × img_size pixels. So 1 degree = img_size / (2 * halfwidth) pixels.
+    """
+    center_lat, center_lon = center
+    scale = img_size / (2.0 * halfwidth)  # pixels per degree
 
     pixel_locations = {}
     for loc in locations:
         lat, lon = locations[loc]
-        x_meters = (lon - center_lon) * meters_per_degree_lon
-        y_meters = (lat - center_lat) * meters_per_degree_lat
-        x_pixel = int((x_meters / gsd_meters) + width / 2)
-        y_pixel = int((-y_meters / gsd_meters) + height / 2)
+        x_pixel = int((lon - center_lon) * scale + img_size / 2)
+        y_pixel = int(-(lat - center_lat) * scale + img_size / 2)
         pixel_locations[loc] = (x_pixel, y_pixel)
     return pixel_locations
 
@@ -439,7 +435,12 @@ class MultipleChoiceGenerator:
         question_location = chosen_location + " (" + str(chosen_location_coords[0]) + ", " + str(chosen_location_coords[1]) + ")"
 
         # correct pixel coordinates
-        correct_pixel_coords = geo_to_pixel({chosen_location: chosen_location_coords}, event_data['base_coordinates'])
+        halfwidth = event_data.get('halfwidth', 0.05)
+        correct_pixel_coords = geo_to_pixel(
+            {chosen_location: chosen_location_coords},
+            event_data['base_coordinates'],
+            halfwidth=halfwidth,
+        )
         correct_pixel_coords = correct_pixel_coords[chosen_location]
 
         # Select template
