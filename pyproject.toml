@@ -1,0 +1,56 @@
+[project]
+name = "monitrs"
+version = "2.0.0"
+description = "MONITRS v2 — multi-image satellite VQA for natural disasters"
+requires-python = ">=3.10"
+
+dependencies = [
+    # article harvest
+    "ddgs>=9.0",
+    "requests>=2.31",
+    # LLM fact extraction
+    "google-genai>=1.0",
+    # data
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "numpy>=1.26",
+    # imagery
+    "earthengine-api>=0.1.380",
+    "pillow>=10.0",
+    # viz
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+# Evaluation metrics
+eval = [
+    "nltk>=3.8",
+    "rouge-score>=0.1.2",
+]
+# Qwen2.5-VL finetuning / inference (heavy)
+train = [
+    "torch>=2.6",
+    "torchvision",
+    "transformers>=4.49",
+    "accelerate>=0.25",
+    "peft>=0.9",
+    "ms-swift[llm]>=3.0",
+    "qwen-vl-utils",
+    "deepspeed",
+]
+# Geo utilities for location QA
+geo = [
+    "geopandas>=0.14",
+    "shapely>=2.0",
+]
+
+[tool.uv]
+# Torch wheels come from the PyTorch index
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }
