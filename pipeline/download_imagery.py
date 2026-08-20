@@ -29,17 +29,42 @@ BLACK_PCT_MAX = 5.0       # reject frames with too many no-data pixels
 IMG_SIZE = 512
 
 
-def fact_dates(rec):
-    """Dates we have verified facts for, sorted."""
+def fact_dates(rec, window_slack_days=45):
+    """Dates we have verified facts for, clamped to the FEMA event window.
+
+    Retrospective articles ("3 years later...") and mis-parsed notable_dates
+    otherwise pull in acquisition targets years away from the event.
+    """
+    fs, fe = rec.get('fema_start'), rec.get('fema_end')
+    lo = hi = None
+    try:
+        if fs:
+            lo = datetime.strptime(fs, '%Y-%m-%d') - timedelta(days=window_slack_days)
+        if fe:
+            hi = datetime.strptime(fe, '%Y-%m-%d') + timedelta(days=window_slack_days)
+    except Exception:
+        pass
+
+    def ok(d):
+        try:
+            t = datetime.strptime(d, '%Y-%m-%d')
+        except Exception:
+            return False
+        if lo and t < lo:
+            return False
+        if hi and t > hi:
+            return False
+        return True
+
     out = set()
     for f in rec['facts']:
         if not f.get('is_about_target_event'):
             continue
         d = f.get('extent_as_of_date') or f.get('pub_date')
-        if d:
+        if d and ok(d):
             out.add(d)
-        for k, v in (f.get('notable_dates') or {}).items():
-            if v:
+        for _, v in (f.get('notable_dates') or {}).items():
+            if v and ok(v):
                 out.add(v)
     return sorted(out)
 
