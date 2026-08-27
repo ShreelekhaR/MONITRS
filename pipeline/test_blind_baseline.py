@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 TEST_FILE = 'test_total.json'
 OUT_PATH = 'Data/blind_baseline.json'
 MCQ_TASKS = {'event_type', 'temporal_grounding',
-             'location_identification', 'multiple_choice'}
+             'location_identification', 'multiple_choice', 'visual_mcq'}
 
 
 def clean_question(text):
