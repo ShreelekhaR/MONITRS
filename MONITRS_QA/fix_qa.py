@@ -44,10 +44,19 @@ BAD_META_PHRASES = [
 ]
 
 
-def is_bad_content(text):
-    if not text or len(text.strip()) < 5:
+def is_bad_content(text, allow_short=False):
+    """Detect failed-caption text.
+
+    allow_short: MCQ answers are a single letter ("b"), so the minimum-length
+    heuristic must not apply to them — it was silently dropping every
+    multiple_choice item.
+    """
+    if not text:
         return True
-    tl = text.lower()
+    t = text.strip()
+    if not allow_short and len(t) < 5:
+        return True
+    tl = t.lower()
     return any(p in tl for p in BAD_PHRASES)
 
 
@@ -151,7 +160,11 @@ def clean_split(path, out_path, rng):
         a = convos[1]['value']
 
         # 1. Drop degenerate content (failed captions)
-        if is_bad_content(q) or is_bad_content(a):
+        # MCQ gold answers are a single letter — exempt them from the
+        # minimum-length check, which otherwise drops every one.
+        short_ok = task in ('multiple_choice', 'event_type',
+                            'temporal_grounding', 'location_identification')
+        if is_bad_content(q) or is_bad_content(a, allow_short=short_ok):
             stats[f'drop_bad_content_{task}'] += 1
             continue
 
