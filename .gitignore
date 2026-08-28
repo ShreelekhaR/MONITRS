@@ -2,3 +2,30 @@
 *.jpg
 *.png
 /Data
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# uv
+uv.lock
+
+# Generated QA / benchmark artifacts (regenerate from pipeline)
+train_total.json
+test_total.json
+test_total.backup.json
+train_generated_*.json
+test_generated_*.json
+new_train_multiple_choice.json
+new_test_multiple_choice.json
+train_qwen.json
+test_qwen.json
+benchmark_ckpts/
+benchmark_*.json
+checkpoints/
+
+# OS
+.DS_Store
