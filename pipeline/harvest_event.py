@@ -266,6 +266,11 @@ def main():
     ap.add_argument('--out-dir', default=HARVEST_DIR)
     ap.add_argument('--event', nargs='+', type=int, default=None)
     ap.add_argument('--limit', type=int, default=None)
+    ap.add_argument('--stratified', action='store_true',
+                    help='With --limit, sample proportionally across event '
+                         'types instead of taking the first N ids. The FEMA '
+                         'file is type-ordered, so the first 200 ids are '
+                         '199 fires — the easiest case and not representative.')
     ap.add_argument('--model', default='gemini-2.5-flash-lite')
     ap.add_argument('--max-rounds', type=int, default=3)
     ap.add_argument('--per-query', type=int, default=8)
@@ -289,7 +294,30 @@ def main():
         targets.append((eid, v))
     targets.sort(key=lambda x: int(x[0]))
     if args.limit:
-        targets = targets[:args.limit]
+        if args.stratified:
+            from collections import defaultdict
+            import random as _r
+            by_type = defaultdict(list)
+            for eid, v in targets:
+                by_type[v.get('type', 'Unknown')].append((eid, v))
+            rng = _r.Random(42)
+            total = sum(len(v) for v in by_type.values())
+            picked = []
+            for t, xs in by_type.items():
+                rng.shuffle(xs)
+                share = max(1, round(args.limit * len(xs) / total))
+                picked.extend(xs[:share])
+            rng.shuffle(picked)
+            targets = picked[:args.limit]
+            shown = defaultdict(int)
+            for _, v in targets:
+                shown[v.get('type', 'Unknown')] += 1
+            print('Stratified sample:')
+            for t, c in sorted(shown.items(), key=lambda x: -x[1]):
+                print(f'    {t}: {c}')
+            print()
+        else:
+            targets = targets[:args.limit]
 
     if not targets:
         print('Nothing to harvest'); return
