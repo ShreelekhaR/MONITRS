@@ -98,16 +98,39 @@ HARD CONSTRAINTS — a question violating any of these is unusable:
 4. OPTIONS MUTUALLY EXCLUSIVE and comparable in length and specificity. Do not
    make the correct option noticeably longer or more detailed.
 
-5. GROUNDED IN THE FACTS ABOVE. The correct answer must follow from the verified
+5. NO MAGNITUDE LADDER. Do not build options that differ only in how much
+   happened. A disaster is known to have occurred, so the strongest option is
+   guessable without looking.
+   WRONG: a) remained the same  b) completely receded  c) slightly decreased
+          d) significantly increased        <-- always the answer
+   RIGHT: options differing in WHERE, WHAT SHAPE, or WHICH FRAME, all at
+          comparable magnitude:
+          a) water covering the fields north of the highway
+          b) water covering the fields south of the highway
+          c) water on both sides, deepest near the bridge
+          d) water confined to the river channel itself
+
+6. NO TEMPORALLY OBVIOUS KEYS. Do not ask which frame shows peak impact when
+   the answer is "the one right after onset" — that follows from the dates
+   alone. If you ask about timing, the options must be frames where the visual
+   evidence genuinely differs and the ordering is not inferable from the
+   event date.
+
+7. GROUNDED IN THE FACTS ABOVE. The correct answer must follow from the verified
    facts or measured change. Do not invent numbers.
 
-6. NEVER make "no change" / "nothing visible" / "insufficient evidence" the
+8. NEVER make "no change" / "nothing visible" / "insufficient evidence" the
    CORRECT answer. This event has a measured visual signature — ask about what
    IS there. A null answer is a shortcut: a model that always picks the
    negative option would score well without looking.
    Such phrasings may appear as distractors, never as the key.
 
-7. Vary answer_index across questions — do not always use the same position.
+9. Vary answer_index across questions — do not always use the same position.
+
+THE TEST TO APPLY TO EVERY QUESTION YOU WRITE:
+   Could someone who knows only "a {etype} happened in {county} County" — and
+   has never seen the images — pick the right answer more often than 1 in 4?
+   If yes, rewrite it.
 
 For each question also give:
   "requires"          what the model must observe in the imagery to answer
@@ -233,6 +256,48 @@ def cross_type_contrast(opts):
     return len(groups) >= 2
 
 
+# Intensity words, ordered weak -> strong. If the four options differ mainly
+# along this axis and the key is the strongest, "a disaster happened so pick
+# the biggest" wins without looking at anything.
+INTENSITY = [
+    (r'\bno\b|\bnone\b|\bunchanged\b|\bnot\b', 0),
+    (r'\bsubtle|\bslight|\bminor|\bimperceptible|\bnegligible|\blimited\b|'
+     r'\bisolated\b|\blocalized\b|\bsmall\b', 1),
+    (r'\bmoderate|\bpartial|\bsome\b|\bnoticeable\b', 2),
+    (r'\bsignificant|\bsubstantial|\bmajor\b|\bwidespread|\bextensive|'
+     r'\bdramatic|\bsevere\b|\bpronounced|\blarge-scale\b|\bcomplete', 3),
+]
+
+
+def intensity_rank(text):
+    t = text.lower()
+    best = None
+    for pat, rank in INTENSITY:
+        if re.search(pat, t):
+            best = rank if best is None else max(best, rank)
+    return best
+
+
+def magnitude_ladder(opts, ai):
+    """True if options form an intensity scale and the key is the extreme."""
+    ranks = [intensity_rank(o) for o in opts]
+    scored = [r for r in ranks if r is not None]
+    if len(scored) < 3:
+        return False
+    if ranks[ai] is None:
+        return False
+    # Key is strictly the strongest, and the options span the scale
+    return ranks[ai] == max(scored) and len(set(scored)) >= 3
+
+
+# Asking which frame shows peak impact is answerable from the dates alone.
+TEMPORALLY_OBVIOUS = re.compile(
+    r'which (period|frame|image|date).{0,40}'
+    r'(most pronounced|peak|greatest|maximum|strongest|most significant)|'
+    r'(most pronounced|peak|greatest|maximum).{0,30}(period|frame|phase)',
+    re.I)
+
+
 NEGATIVE_ANSWER = re.compile(
     r'no (significant|discernible|noticeable|clear|visible|major|apparent)|'
     r'unchanged|not provide sufficient|no change|absence of|'
@@ -265,6 +330,12 @@ def validate(q):
         for o in opts:
             groups |= signature_groups(o)
         return False, f'cross-type distractors {sorted(groups)}: {opts[ai][:50]}'
+    # "A disaster happened, so pick the biggest number" — no imagery needed
+    if magnitude_ladder(opts, ai):
+        return False, f'magnitude ladder, key is extreme: {opts[ai][:55]}'
+    # "Peak impact is right after onset" follows from the dates
+    if TEMPORALLY_OBVIOUS.search(q.get('question', '')):
+        return False, f'temporally obvious: {q.get("question","")[:60]}'
     # Correct option markedly longer than the others is a giveaway
     lens = [len(o) for o in opts]
     if lens[ai] > 1.8 * (sum(lens) - lens[ai]) / 3:
@@ -324,8 +395,16 @@ def gen_for_event(ev, sig, client, model_id, n_questions):
     return kept, rejected
 
 
-def to_training_format(ev, q, rng):
-    """Shuffle option order, then emit in the shared conversations format."""
+def to_training_format(ev, q, seed_material):
+    """Shuffle option order, then emit in the shared conversations format.
+
+    Takes seed material rather than a shared Random: generation runs under a
+    ThreadPoolExecutor and random.Random is not thread-safe. A single shared
+    instance produced a biased permutation — position 'd' was over-represented
+    and the blind baseline learned to exploit it, which looked like a flaw in
+    the questions rather than a bug here.
+    """
+    rng = random.Random(seed_material)
     opts = list(q['options'])
     correct = opts[q['answer_index']]
     rng.shuffle(opts)
@@ -346,6 +425,45 @@ def to_training_format(ev, q, rng):
             {'from': 'gpt', 'value': letters[idx]},
         ],
     }
+
+
+def rebalance_answers(items, seed=42):
+    """Force a near-uniform answer-position distribution.
+
+    Even correct per-question shuffling leaves the aggregate distribution
+    noticeably uneven at these sample sizes, and a blind model exploits it.
+    Rotating each question's options by a deterministic offset guarantees
+    balance without changing any question's content.
+    """
+    letters = ['a', 'b', 'c', 'd']
+    order = sorted(range(len(items)),
+                   key=lambda i: (items[i]['event_id'], i))
+    out = list(items)
+
+    for slot, i in enumerate(order):
+        it = items[i]
+        q_text = it['conversations'][0]['value']
+        gold = it['conversations'][1]['value'].strip()
+        m = re.findall(r'^([a-d])\.\s(.+)$', q_text, re.M)
+        if len(m) != 4 or gold not in letters:
+            continue
+        opts = [t for _, t in m]
+        cur = letters.index(gold)
+        target = slot % 4                      # round-robin across a/b/c/d
+        shift = (target - cur) % 4
+        rotated = opts[-shift:] + opts[:-shift] if shift else opts
+
+        stem = q_text.split('\n' + m[0][0] + '. ')[0]
+        tail = ('\nAnswer with a single letter (a, b, c, or d).'
+                if 'Answer with a single letter' in q_text else '')
+        body = '\n'.join(f'{letters[j]}. {o}' for j, o in enumerate(rotated))
+        new = dict(it)
+        new['conversations'] = [
+            {'from': 'human', 'value': f'{stem}\n{body}{tail}'},
+            {'from': 'gpt', 'value': letters[target]},
+        ]
+        out[i] = new
+    return out
 
 
 def main():
@@ -388,10 +506,15 @@ def main():
         futs = [pool.submit(work, k) for k in keys]
         for fut in as_completed(futs):
             k, (kept, rejected) = fut.result()
-            for q in kept:
-                all_q.append(to_training_format(aligned[k], q, rng))
+            for qi, q in enumerate(kept):
+                # Deterministic per-question seed — no shared RNG across threads
+                all_q.append(to_training_format(
+                    aligned[k], q, f'{args.seed}|{k}|{qi}'))
             all_rej.extend(rejected)
             print(f'  ev{k}: {len(kept)} kept, {len(rejected)} rejected')
+
+    # Balance answer positions: rotate options so keys are evenly spread
+    all_q = rebalance_answers(all_q, args.seed)
 
     with open(args.out, 'w') as f:
         json.dump(all_q, f, indent=2)
