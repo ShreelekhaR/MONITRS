@@ -27,6 +27,7 @@ import json
 import os
 import random
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ALIGNED = 'Data/aligned_frames.json'
@@ -395,7 +396,7 @@ def gen_for_event(ev, sig, client, model_id, n_questions):
     return kept, rejected
 
 
-def to_training_format(ev, q, seed_material):
+def to_training_format(ev, q, seed_material, split=None):
     """Shuffle option order, then emit in the shared conversations format.
 
     Takes seed material rather than a shared Random: generation runs under a
@@ -413,7 +414,7 @@ def to_training_format(ev, q, seed_material):
     body = '\n'.join(f'{letters[i]}. {o}' for i, o in enumerate(opts))
     question = (f"{q['question']}\n{body}\n"
                 f"Answer with a single letter (a, b, c, or d).")
-    return {
+    out = {
         'event_id': ev['event_id'],
         'task': 'visual_mcq',
         'video': [fr['path'] for fr in ev['frames']],
@@ -425,6 +426,9 @@ def to_training_format(ev, q, seed_material):
             {'from': 'gpt', 'value': letters[idx]},
         ],
     }
+    if split:
+        out['split'] = split
+    return out
 
 
 def rebalance_answers(items, seed=42):
@@ -466,6 +470,23 @@ def rebalance_answers(items, seed=42):
     return out
 
 
+def load_split():
+    """County-level holdout from MONITRS_QA/split.py.
+
+    Without this the generator emits questions across the county boundary and
+    reintroduces the geographic leakage the split exists to prevent.
+    """
+    try:
+        sys.path.insert(0, 'MONITRS_QA')
+        from split import get_train_test_ids
+        train_ids, test_ids = get_train_test_ids()
+        return set(map(str, train_ids)), set(map(str, test_ids))
+    except Exception as e:
+        print(f'WARNING: county split unavailable ({e}); '
+              f'questions will not be partitioned', flush=True)
+        return None, None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--aligned', default=ALIGNED)
@@ -496,6 +517,7 @@ def main():
                           http_options=HttpOptions(api_version='v1'))
 
     print(f'Generating visual MCQ for {len(keys)} events\n')
+    train_ids, test_ids = load_split()
     all_q, all_rej = [], []
 
     def work(k):
@@ -506,18 +528,33 @@ def main():
         futs = [pool.submit(work, k) for k in keys]
         for fut in as_completed(futs):
             k, (kept, rejected) = fut.result()
+            if train_ids is not None:
+                split = 'train' if k in train_ids else (
+                    'test' if k in test_ids else None)
+            else:
+                split = None
             for qi, q in enumerate(kept):
                 # Deterministic per-question seed — no shared RNG across threads
                 all_q.append(to_training_format(
-                    aligned[k], q, f'{args.seed}|{k}|{qi}'))
+                    aligned[k], q, f'{args.seed}|{k}|{qi}', split=split))
             all_rej.extend(rejected)
-            print(f'  ev{k}: {len(kept)} kept, {len(rejected)} rejected')
+            print(f'  ev{k}: {len(kept)} kept, {len(rejected)} rejected'
+                  + (f'  [{split}]' if split else ''))
 
     # Balance answer positions: rotate options so keys are evenly spread
     all_q = rebalance_answers(all_q, args.seed)
 
     with open(args.out, 'w') as f:
         json.dump(all_q, f, indent=2)
+
+    # Also emit the split partitions, which is what training consumes
+    if train_ids is not None:
+        base = args.out.rsplit('.json', 1)[0]
+        for name in ('train', 'test'):
+            part = [q for q in all_q if q.get('split') == name]
+            with open(f'{base}_{name}.json', 'w') as f:
+                json.dump(part, f, indent=2)
+            print(f'  {name}: {len(part)} questions -> {base}_{name}.json')
 
     from collections import Counter
     dist = Counter(q['conversations'][1]['value'] for q in all_q)
