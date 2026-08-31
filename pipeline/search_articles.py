@@ -164,15 +164,38 @@ def build_queries(event):
     return out
 
 
-def search_ddg(query, max_results=8):
-    """DuckDuckGo search. Returns list of URLs."""
-    try:
-        from ddgs import DDGS
-    except ImportError:
+_DDGS_CLS = None
+_DDGS_CHECKED = False
+
+
+def _get_ddgs():
+    """Resolve the DDGS class once. Returns None if the package is missing."""
+    global _DDGS_CLS, _DDGS_CHECKED
+    if _DDGS_CHECKED:
+        return _DDGS_CLS
+    _DDGS_CHECKED = True
+    for mod in ('ddgs', 'duckduckgo_search'):
         try:
-            from duckduckgo_search import DDGS
+            _DDGS_CLS = __import__(mod, fromlist=['DDGS']).DDGS
+            return _DDGS_CLS
         except ImportError:
-            raise RuntimeError('pip install ddgs')
+            continue
+    import sys
+    print('\nERROR: no search backend. Install with:\n'
+          f'    {sys.executable} -m pip install ddgs\n', flush=True)
+    return None
+
+
+def search_ddg(query, max_results=8):
+    """DuckDuckGo search. Returns list of URLs, empty on any failure.
+
+    Never raises: a harvest run spans hours across thousands of events, and a
+    transient search error or a missing dependency should not discard
+    everything already collected.
+    """
+    DDGS = _get_ddgs()
+    if DDGS is None:
+        return []
     urls = []
     try:
         with DDGS() as ddgs:

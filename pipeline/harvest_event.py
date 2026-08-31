@@ -330,8 +330,14 @@ def main():
                           http_options=HttpOptions(api_version='v1'))
 
     def run(eid, ev):
-        rec = harvest(eid, ev, client, args.model, args.max_rounds,
-                      args.per_query, args.target_score)
+        try:
+            rec = harvest(eid, ev, client, args.model, args.max_rounds,
+                          args.per_query, args.target_score)
+        except Exception as e:
+            # One bad event must not discard hours of completed work
+            print(f'  [ev{eid}] FAILED: {type(e).__name__}: {str(e)[:120]}',
+                  flush=True)
+            return None
         with open(os.path.join(args.out_dir, f'{eid}.json'), 'w') as f:
             json.dump(rec, f, indent=2)
         return rec
@@ -341,10 +347,18 @@ def main():
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futs = {pool.submit(run, eid, ev): eid for eid, ev in targets}
             for fut in as_completed(futs):
-                results.append(fut.result())
+                r = fut.result()
+                if r:
+                    results.append(r)
     else:
         for eid, ev in targets:
-            results.append(run(eid, ev))
+            r = run(eid, ev)
+            if r:
+                results.append(r)
+
+    if not results:
+        print('\nNo events harvested successfully.')
+        return
 
     print(f'\n{"="*78}')
     print(f'{"event":>7} {"type":<18} {"rel":>4} {"score":>6}  extent / start / feats / ts')
