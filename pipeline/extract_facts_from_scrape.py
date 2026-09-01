@@ -20,20 +20,20 @@ FACTS_PATH = 'Data/article_facts.json'
 
 
 PROMPT = """You are given a target disaster event and a news article.
-Decide whether the article reports on THAT specific local event, then extract
-only facts scoped to the target county.
+Decide whether the article covers THAT disaster, then extract its facts.
 
-TARGET EVENT:
-  name:   {event_name}
-  type:   {event_type}
-  place:  {county} County, {state}
-  window: {fema_start} to {fema_end}
+TARGET EVENT
+  FEMA declaration: {event_name}
+  type:             {event_type}
+  declared for:     {county} County, {state}
+  window:           {fema_start} to {fema_end}
 
 Return STRICT JSON only (no prose, no markdown fence):
 
 {
   "is_about_target_event": true,
   "relevance_reason": "",
+  "geographic_scope": null,
   "extent_number": null,
   "extent_unit": null,
   "extent_scope": null,
@@ -43,39 +43,68 @@ Return STRICT JSON only (no prose, no markdown fence):
   "notable_dates": {"start": null, "peak": null, "contained": null}
 }
 
-CRITICAL — SCOPE. Many articles about a regional disaster report STATEWIDE or
-MULTI-COUNTY totals. Those numbers are useless for a satellite image of one
-county. So:
-- "extent_scope" must be one of "local", "regional", "statewide", "national".
-  "local"    = the figure describes {county} County or a single named incident
-               inside it.
-  "regional" = several counties, a whole basin, or a named multi-county complex.
-  "statewide"/"national" = the figure aggregates the whole state or country.
-- Set extent_number ONLY when extent_scope is "local". If the article only gives
-  a regional or statewide total, still record extent_scope, but leave
-  extent_number and extent_unit null.
-- Example: for a target of Klamath County, "the Two Four Two Fire has burned
-  10,000 acres" is local. "Oregon wildfires have burned over 1 million acres"
-  is statewide -> do NOT put 1000000 in extent_number.
+RELEVANCE — read this carefully.
 
-Other fields:
-- is_about_target_event: true only if the article describes the SAME incident —
-  same disaster, same general place, same time window. False for a different
-  fire/storm, different state, different year, generic explainer, site index, or
-  a page since updated to cover a newer incident.
-- extent_unit ∈ {"acres","sq_miles","structures","homes"}.
+"is_about_target_event" asks only: does this article describe THE SAME DISASTER?
+It does NOT ask whether the article focuses on {county} County.
+
+FEMA declaration names are bureaucratic ("SEVERE STORMS AND FLOODING") and are
+issued per county, but a hurricane or winter storm is one regional event that
+outlets cover at many scales. An article about the same storm hitting the same
+state in the same window IS about the target event, even if it never names
+{county} County.
+
+  TRUE - same disaster:
+    - Names the same storm/fire and the same state, within the window
+    - Covers the region ({state}, "the Gulf Coast", "the Southeast") during the
+      window for this disaster type
+    - Focuses on a neighbouring county affected by the same system
+    - A statewide or national roundup of this specific disaster
+
+  FALSE - different disaster:
+    - A different named storm or fire
+    - A different year, or clearly outside the window
+    - A different region unaffected by this system
+    - A generic explainer, index page, or preparedness guide
+    - A page since updated to cover a newer incident
+
+Record where the article sits with "geographic_scope":
+  "county"   - substantially about {county} County
+  "regional" - the surrounding area or several counties
+  "statewide"/"national" - the whole state or country
+
+Set is_about_target_event false ONLY for a genuinely different event. Scope is
+recorded separately and is never a reason to reject.
+
+EXTENT — this is where county-level precision matters.
+
+- "extent_scope" is one of "local", "regional", "statewide", "national".
+  "local" = the figure describes {county} County or a single named incident
+  inside it.
+- Record extent_number ONLY when extent_scope is "local". A statewide total is
+  the wrong order of magnitude for one county's satellite chip. If the article
+  gives only a wider figure, still set extent_scope but leave extent_number and
+  extent_unit null.
+- Example, target Klamath County: "the Two Four Two Fire has burned 10,000
+  acres" is local. "Oregon wildfires have burned over 1 million acres" is
+  statewide - do NOT put 1000000 in extent_number.
+
+OTHER FIELDS
+- extent_unit is one of "acres", "sq_miles", "structures", "homes".
 - extent_as_of_date: the date that figure describes (YYYY-MM-DD). Resolve
-  relative phrases ("as of Wednesday") against the publication date. If unclear,
+  relative phrases ("as of Wednesday") against the publication date; otherwise
   use the publication date.
-- contained_pct: fire containment percent (0-100), null if not a fire. Only when
-  it refers to the local incident.
+- contained_pct: fire containment percent (0-100), null if not a fire, and only
+  when it refers to the local incident.
 - affected_features: NAMED physical things visible from ~10m satellite imagery
-  that the article says were affected — roads/highways, rivers, lakes, forests,
-  airports, ports, named neighborhoods, named ridges or mountains.
-  They MUST be inside or immediately adjacent to {county} County, {state}.
-  Do NOT list features from elsewhere in the state.
-  EXCLUDE: people, dollar amounts, agencies, generic phrases.
+  that the article says were affected - roads/highways, rivers, lakes, forests,
+  airports, ports, named neighbourhoods, named ridges or mountains.
+  Prefer features in or near {county} County, {state}, but include others from
+  the same event; they are spatially filtered downstream.
+  EXCLUDE people, dollar amounts, agencies, generic phrases.
 - notable_dates: when the event started / peaked / was contained (YYYY-MM-DD).
+  These are valuable even from a regional article - a hurricane's landfall date
+  is the same across every county it hit.
 
 Only extract what the text states. Use null generously. No guessing.
 

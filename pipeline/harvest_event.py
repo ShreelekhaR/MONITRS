@@ -46,8 +46,10 @@ HARVEST_DIR = 'Data/harvest'
 def coverage(facts):
     """What fraction of the target fact set do we have?
 
-    Only counts LOCAL-scope extent figures — statewide/regional aggregates are
-    the wrong order of magnitude for a single-county image chip.
+    Extent must be LOCAL — statewide aggregates are the wrong order of
+    magnitude for a single-county chip. But dates and features are credited
+    from regional articles too: a hurricane's landfall date is the same across
+    every county it hit, and features are spatially filtered downstream.
     """
     rel = [f for f in facts if f.get('is_about_target_event')]
     local = [f for f in rel if f.get('extent_scope') in (None, 'local')]
@@ -56,8 +58,10 @@ def coverage(facts):
     has_feats = any(f.get('validated_features') for f in rel)
     multi_date = len({f.get('extent_as_of_date') or f.get('pub_date')
                       for f in local if f.get('extent_number')}) >= 2
+    n_county = sum(1 for f in rel if f.get('geographic_scope') == 'county')
     return {
         'n_relevant': len(rel),
+        'n_county_scoped': n_county,
         'n_local_extent': sum(1 for f in local if f.get('extent_number')),
         'has_extent': has_extent,
         'has_start_date': has_start,
