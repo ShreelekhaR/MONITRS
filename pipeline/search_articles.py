@@ -20,6 +20,7 @@ import csv
 import json
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -167,6 +168,57 @@ def build_queries(event):
 _DDGS_CLS = None
 _DDGS_CHECKED = False
 
+# DuckDuckGo throttles aggressively. Without a shared limiter, N workers each
+# firing several queries per event get the whole run blocked — the failure mode
+# is silent (empty results, "h2 connection driver error" on stderr), so a
+# multi-hour run can complete having found almost nothing.
+_search_lock = threading.Lock()
+_last_search = [0.0]
+_consecutive_empty = [0]
+_backoff_until = [0.0]
+
+SEARCH_MIN_INTERVAL = float(os.environ.get('DDG_MIN_INTERVAL', '2.5'))
+SEARCH_MAX_RETRIES = 3
+
+
+class SearchBlocked(Exception):
+    """Raised when the search backend appears to be blocking us outright."""
+
+
+def _throttle_search():
+    """Serialize searches across threads and honour any active backoff."""
+    while True:
+        with _search_lock:
+            now = time.time()
+            wait = max(_backoff_until[0] - now,
+                       SEARCH_MIN_INTERVAL - (now - _last_search[0]))
+            if wait <= 0:
+                _last_search[0] = now
+                return
+        time.sleep(min(wait, 30.0))
+
+
+def _note_result(n_urls):
+    """Track consecutive empties and back off when they pile up."""
+    with _search_lock:
+        if n_urls > 0:
+            _consecutive_empty[0] = 0
+            return
+        _consecutive_empty[0] += 1
+        n = _consecutive_empty[0]
+        if n and n % 10 == 0:
+            # 10 empties in a row is not bad luck — pause everything
+            pause = min(60 * (n // 10), 600)
+            _backoff_until[0] = time.time() + pause
+            print(f'\n  [search] {n} consecutive empty results — '
+                  f'backing off {pause}s. If this repeats, DuckDuckGo is '
+                  f'rate-limiting; lower --workers or raise DDG_MIN_INTERVAL.\n',
+                  flush=True)
+
+
+def consecutive_empty_searches():
+    return _consecutive_empty[0]
+
 
 def _get_ddgs():
     """Resolve the DDGS class once. Returns None if the package is missing."""
@@ -187,24 +239,37 @@ def _get_ddgs():
 
 
 def search_ddg(query, max_results=8):
-    """DuckDuckGo search. Returns list of URLs, empty on any failure.
+    """DuckDuckGo search with shared throttling and retry.
 
-    Never raises: a harvest run spans hours across thousands of events, and a
-    transient search error or a missing dependency should not discard
-    everything already collected.
+    Returns [] on failure rather than raising: a harvest spans hours across
+    thousands of events, and one transient error should not discard work
+    already done.
     """
     DDGS = _get_ddgs()
     if DDGS is None:
         return []
-    urls = []
-    try:
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results):
-                u = r.get('href') or r.get('url') or ''
-                if u.startswith('http'):
-                    urls.append(u)
-    except Exception:
-        pass
+
+    for attempt in range(SEARCH_MAX_RETRIES):
+        _throttle_search()
+        urls = []
+        try:
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=max_results):
+                    u = r.get('href') or r.get('url') or ''
+                    if u.startswith('http'):
+                        urls.append(u)
+        except Exception:
+            urls = []
+        if urls:
+            _note_result(len(urls))
+            return urls
+        # Empty: could be a genuinely obscure query or throttling. Back off
+        # a little and retry before concluding there is nothing there.
+        if attempt < SEARCH_MAX_RETRIES - 1:
+            time.sleep(2.0 * (2 ** attempt))
+
+    _note_result(0)
+    return []
     return urls
 
 

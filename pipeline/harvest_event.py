@@ -30,7 +30,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from search_articles import (build_queries, search_ddg, domain_of,
-                             SKIP_DOMAINS, month_year, year_of)
+                             SKIP_DOMAINS, month_year, year_of,
+                             consecutive_empty_searches)
 from scrape_articles import scrape_one
 from extract_facts_from_scrape import PROMPT, call
 from validate_features import validate_features
@@ -338,23 +339,54 @@ def main():
             print(f'  [ev{eid}] FAILED: {type(e).__name__}: {str(e)[:120]}',
                   flush=True)
             return None
+        # Don't persist a zero-article result: it is far more likely that
+        # search was throttled than that the event has no coverage, and a
+        # cached zero would be skipped on resume and never retried.
+        if rec['coverage']['n_relevant'] == 0 and rec['n_scraped'] == 0:
+            return rec
         with open(os.path.join(args.out_dir, f'{eid}.json'), 'w') as f:
             json.dump(rec, f, indent=2)
         return rec
 
     results = []
+    n_zero_streak = 0
+    ABORT_AFTER_ZERO = 25
+
+    def record(r):
+        nonlocal n_zero_streak
+        if not r:
+            return
+        results.append(r)
+        if r['coverage']['n_relevant'] == 0:
+            n_zero_streak += 1
+        else:
+            n_zero_streak = 0
+
     if args.workers > 1:
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futs = {pool.submit(run, eid, ev): eid for eid, ev in targets}
             for fut in as_completed(futs):
-                r = fut.result()
-                if r:
-                    results.append(r)
+                record(fut.result())
+                if n_zero_streak >= ABORT_AFTER_ZERO:
+                    print(f'\nABORTING: {n_zero_streak} consecutive events with '
+                          f'zero relevant articles '
+                          f'({consecutive_empty_searches()} empty searches in a row).\n'
+                          f'Search is almost certainly rate-limited. Wait ~30 min, '
+                          f'then retry with fewer workers:\n'
+                          f'    DDG_MIN_INTERVAL=5 python pipeline/harvest_event.py '
+                          f'--limit {args.limit or 200} --stratified --workers 2\n'
+                          f'Completed events are saved and will be skipped on resume.\n',
+                          flush=True)
+                    for f in futs:
+                        f.cancel()
+                    break
     else:
         for eid, ev in targets:
-            r = run(eid, ev)
-            if r:
-                results.append(r)
+            record(run(eid, ev))
+            if n_zero_streak >= ABORT_AFTER_ZERO:
+                print(f'\nABORTING: {n_zero_streak} consecutive zero-article events; '
+                      f'search is rate-limited. Wait and resume.\n', flush=True)
+                break
 
     if not results:
         print('\nNo events harvested successfully.')
