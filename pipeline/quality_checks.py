@@ -443,7 +443,15 @@ def main():
             try:
                 fn()
             except Exception as e:
-                report(name, 'check crashed', 'FAIL', f'{type(e).__name__}: {e}')
+                import traceback
+                tb = traceback.format_exc().strip().split('\n')
+                # Last frame before the exception line tells us the real site
+                where = [l.strip() for l in tb if l.strip().startswith('File')]
+                report(name, 'check crashed', 'FAIL',
+                       f'{type(e).__name__}: {e}\n' +
+                       ('\n'.join(where[-2:]) if where else ''))
+                if os.environ.get('QC_TRACEBACK'):
+                    print('\n'.join(tb))
             if args.fail_fast and any(r[2] == 'FAIL' for r in RESULTS):
                 break
 
