@@ -2,7 +2,9 @@
 name = "monitrs"
 version = "2.0.0"
 description = "MONITRS v2 — multi-image satellite VQA for natural disasters"
-requires-python = ">=3.10"
+# Upper bound because the pinned cu121 torch index has no wheels beyond 3.13;
+# without it uv solves for 3.14 and the train extra becomes unsatisfiable.
+requires-python = ">=3.10,<3.14"
 
 dependencies = [
     # article harvest
