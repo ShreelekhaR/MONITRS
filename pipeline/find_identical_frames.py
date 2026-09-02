@@ -26,18 +26,12 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fix_centers import county_geo_cached, haversine_km
+from fix_centers import county_geo_cached, haversine_km, in_county
 
 EVENTS_PATH = 'Data/events_processed.json'
 IMAGES_DIR = 'Data/images'
 CACHE_PATH = 'Data/county_geo.json'
 
-
-def in_bbox(center, bbox):
-    if not bbox or not center:
-        return None
-    s, n, w, e = bbox
-    return s <= center[0] <= n and w <= center[1] <= e
 
 
 def main():
@@ -89,8 +83,8 @@ def main():
         v2 = ev.get(eid_of(d2), {})
         c1, bb1 = county_geo_cached(v1.get('county'), v1.get('state'), cache)
         c2, bb2 = county_geo_cached(v2.get('county'), v2.get('state'), cache)
-        ok1 = in_bbox(v1.get('center'), bb1)
-        ok2 = in_bbox(v2.get('center'), bb2)
+        ok1 = in_county(v1.get('center'), c1, bb1)
+        ok2 = in_county(v2.get('center'), c2, bb2)
         # Distance between the two county centroids: adjacent counties are
         # tens of km apart, unrelated ones hundreds.
         county_km = haversine_km(c1, c2) if c1 and c2 else None

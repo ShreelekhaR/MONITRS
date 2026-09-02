@@ -26,18 +26,11 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fix_centers import county_geo_cached, haversine_km
+from fix_centers import county_geo_cached, haversine_km, in_county
 
 EVENTS_PATH = 'Data/events_processed.json'
 CACHE_PATH = 'Data/county_geo.json'
 
-
-def in_bbox(center, bbox):
-    """True/False if the county polygon is known, None if it is not."""
-    if not bbox or not center:
-        return None
-    s, n, w, e = bbox
-    return s <= center[0] <= n and w <= center[1] <= e
 
 
 def main():
@@ -79,10 +72,10 @@ def main():
                         (v2.get('state'), v2.get('county')):
                     same_county.append(row)
                     continue
-                _, bb1 = county_geo_cached(v1.get('county'), v1.get('state'), cache)
-                _, bb2 = county_geo_cached(v2.get('county'), v2.get('state'), cache)
-                ok1 = in_bbox(v1.get('center'), bb1)
-                ok2 = in_bbox(v2.get('center'), bb2)
+                ct1, bb1 = county_geo_cached(v1.get('county'), v1.get('state'), cache)
+                ct2, bb2 = county_geo_cached(v2.get('county'), v2.get('state'), cache)
+                ok1 = in_county(v1.get('center'), ct1, bb1)
+                ok2 = in_county(v2.get('center'), ct2, bb2)
                 if ok1 is None or ok2 is None:
                     unknown.append(row)
                 elif ok1 and ok2:

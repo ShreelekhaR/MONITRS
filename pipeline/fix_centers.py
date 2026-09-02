@@ -145,8 +145,46 @@ def county_geo_cached(county_raw, state, cache):
     return centroid, bbox
 
 
-def place_in_county(name, county_raw, state, cache, bbox):
-    """Geocode a named place, requiring it to sit inside the county bbox."""
+# Nominatim sometimes returns a node rather than a polygon, giving a bbox of
+# zero area. Arecibo Municipio, PR comes back 0.00 x 0.00 deg. Treating that as
+# the county boundary rejects every point on earth, so it has to be detected
+# rather than trusted.
+MIN_BBOX_DEG = 0.01
+
+# A bbox is a rectangle, so it is already larger than the county inside it.
+# Being outside it is therefore strong evidence, but FIRMS detections for an
+# event on the county line can sit just beyond — allow a margin (~5 km).
+BBOX_MARGIN_DEG = 0.05
+
+
+def bbox_usable(bbox):
+    """False for a missing or degenerate bbox, which cannot bound anything."""
+    if not bbox:
+        return False
+    s, n, w, e = bbox
+    return (n - s) >= MIN_BBOX_DEG and (e - w) >= MIN_BBOX_DEG
+
+
+def in_county(center, centroid, bbox, max_km=DEFAULT_MAX_KM,
+              margin=BBOX_MARGIN_DEG):
+    """Is this center plausibly inside its declared county?
+
+    Prefers the bbox: a center can sit 70 km from the centroid and still be in
+    a large county, or 70 km away and squarely in the next county over, and
+    only the boundary distinguishes those. Falls back to distance when the
+    bbox is degenerate.
+    """
+    if not center or not centroid:
+        return None
+    if bbox_usable(bbox):
+        s, n, w, e = bbox
+        return (s - margin <= center[0] <= n + margin and
+                w - margin <= center[1] <= e + margin)
+    return haversine_km(tuple(center[:2]), centroid) <= max_km
+
+
+def place_in_county(name, county_raw, state, cache, bbox, centroid=None):
+    """Geocode a named place, requiring it to sit inside the county."""
     bare, _ = clean_county(county_raw)
     state_full = STATE_NAMES.get((state or '').upper(), state or '')
     for q in (f'{name}, {bare} County, {state_full}',
@@ -156,10 +194,15 @@ def place_in_county(name, county_raw, state, cache, bbox):
         if not r:
             continue
         lat, lon = float(r['lat']), float(r['lon'])
-        if bbox:
+        if bbox_usable(bbox):
             s, n, w, e = bbox
             if not (s <= lat <= n and w <= lon <= e):
                 continue          # outside the declared county — reject
+        elif centroid is not None:
+            # No usable boundary: keep the distance constraint rather than
+            # accepting a same-named place in another state.
+            if haversine_km((lat, lon), centroid) > DEFAULT_MAX_KM:
+                continue
         return lat, lon
     return None, None
 
@@ -194,7 +237,7 @@ def repair_center(eid, ev, cache, max_km):
     hits = []
     for name in places:
         lat, lon = place_in_county(name, ev.get('county'), ev.get('state'),
-                                   cache, bbox)
+                                   cache, bbox, centroid)
         if lat is not None:
             hits.append((name, lat, lon))
         if len(hits) >= 4:
@@ -226,21 +269,27 @@ def main():
     events = json.load(open(args.events))
     cache = json.load(open(args.cache)) if os.path.exists(args.cache) else {}
 
-    print(f'Checking centers against declared county (threshold {args.max_km:.0f} km)\n')
+    print(f'Checking centers against declared county boundary '
+          f'(fallback threshold {args.max_km:.0f} km where no bbox)\n')
 
-    broken, ok, unresolved = [], 0, 0
+    broken, ok, unresolved, no_bbox = [], 0, 0, 0
     checked = 0
     ids = [e for e, v in events.items() if 'error' not in v and v.get('center')]
     for i, eid in enumerate(ids, 1):
         v = events[eid]
-        centroid, _ = county_geo(v.get('county'), v.get('state'), cache)
+        centroid, bbox = county_geo(v.get('county'), v.get('state'), cache)
         if centroid is None:
             unresolved += 1
             continue
         checked += 1
         d = haversine_km(tuple(v['center'][:2]), centroid)
-        if d > args.max_km:
+        # Distance alone cannot decide this: 70 km from the centroid is well
+        # inside Lincoln County NM and well outside Washington County OR. Use
+        # the boundary where we have one.
+        if not in_county(v['center'], centroid, bbox, args.max_km):
             broken.append((eid, d))
+            if not bbox_usable(bbox):
+                no_bbox += 1
         else:
             ok += 1
         if i % 200 == 0:
@@ -250,8 +299,9 @@ def main():
     json.dump(cache, open(args.cache, 'w'))
 
     print(f'\n{checked} centers checked')
-    print(f'  within {args.max_km:.0f} km of county: {ok} ({100*ok/max(1,checked):.1f}%)')
+    print(f'  inside declared county:    {ok} ({100*ok/max(1,checked):.1f}%)')
     print(f'  broken:                    {len(broken)} ({100*len(broken)/max(1,checked):.1f}%)')
+    print(f'    judged by distance only: {no_bbox} (county bbox degenerate)')
     print(f'  county not geocodable:     {unresolved}')
     if broken:
         print(f'  by strategy: {dict(Counter(events[e].get("strategy") for e, _ in broken))}')
