@@ -206,12 +206,24 @@ def check_harvest():
     # extent magnitudes sane per type
     LIMITS = {'acres': 3_000_000, 'sq_miles': 50_000,
               'structures': 200_000, 'homes': 200_000}
-    absurd = []
+    absurd, non_numeric = [], []
     for r in recs:
         for f in r.get('facts', []):
             v, u = f.get('extent_number'), f.get('extent_unit')
-            if v and u in LIMITS and v > LIMITS[u]:
+            if v is None:
+                continue
+            # The LLM sometimes returns a range ([500, 1000]) or a string
+            # rather than a scalar. Those break every downstream numeric
+            # comparison, so surface them rather than crashing on them.
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                non_numeric.append((r['event_id'], repr(v)[:40], u))
+                continue
+            if u in LIMITS and v > LIMITS[u]:
                 absurd.append((r['event_id'], v, u))
+    report('harvest', 'extent_number is numeric',
+           'PASS' if not non_numeric else 'FAIL',
+           f'{len(non_numeric)} non-scalar values: {non_numeric[:4]}'
+           if non_numeric else '')
     report('harvest', 'extent magnitudes plausible',
            'PASS' if not absurd else 'WARN',
            f'{len(absurd)} implausible: {absurd[:4]}' if absurd else '')

@@ -30,6 +30,7 @@ Usage:
 
 import argparse
 import json
+import re
 import os
 from collections import defaultdict, Counter
 
@@ -46,8 +47,30 @@ PEAK_TYPES = {'Flood', 'Hurricane', 'Tropical Storm', 'Coastal Storm'}
 
 
 def _canonical_extent(v, u):
-    """Normalize to canonical (value, unit) or None."""
+    """Normalize to canonical (value, unit) or None.
+
+    The LLM sometimes returns a range ([500, 1000]) or a string instead of a
+    scalar. Take the upper end of a range; reject anything else.
+    """
     if v is None or u is None:
+        return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (list, tuple)):
+        nums = [x for x in v if isinstance(x, (int, float))
+                and not isinstance(x, bool)]
+        if not nums:
+            return None
+        v = max(nums)
+    if isinstance(v, str):
+        m = re.search(r'[\d,]+(?:\.\d+)?', v)
+        if not m:
+            return None
+        try:
+            v = float(m.group(0).replace(',', ''))
+        except ValueError:
+            return None
+    if not isinstance(v, (int, float)):
         return None
     u = str(u).lower().strip()
     unit_map = {
