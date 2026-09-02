@@ -47,6 +47,15 @@ geo = [
 ]
 
 [tool.uv]
+# uv resolves for every platform by default. The pinned cu121 torch index has
+# no win32 wheels for torch>=2.6, so an unconstrained solve fails on Windows
+# and takes the base dependencies down with it. We only ever run on Linux
+# (GCP Workbench) and macOS (local dev).
+environments = [
+    "sys_platform == 'linux'",
+    "sys_platform == 'darwin'",
+]
+
 # Torch wheels come from the PyTorch index
 [[tool.uv.index]]
 name = "pytorch-cu121"
