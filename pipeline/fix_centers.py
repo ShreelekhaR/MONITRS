@@ -128,6 +128,23 @@ def county_geo(county_raw, state, cache):
     return centroid, bbox
 
 
+def county_geo_cached(county_raw, state, cache):
+    """county_geo without the network — a cache miss returns (None, None).
+
+    Analysis scripts sweep every event, so a cold cache would mean thousands of
+    throttled Nominatim calls. They want "unknown" for what isn't cached, not
+    an hours-long geocoding run they never asked for.
+    """
+    bare, desig = clean_county(county_raw)
+    r = cache.get(f'county|{bare}|{desig}|{state}')
+    if not r:
+        return None, None
+    centroid = (float(r['lat']), float(r['lon']))
+    bb = r.get('boundingbox')
+    bbox = tuple(float(x) for x in bb) if bb and len(bb) == 4 else None
+    return centroid, bbox
+
+
 def place_in_county(name, county_raw, state, cache, bbox):
     """Geocode a named place, requiring it to sit inside the county bbox."""
     bare, _ = clean_county(county_raw)

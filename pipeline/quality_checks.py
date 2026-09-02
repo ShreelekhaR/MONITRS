@@ -40,6 +40,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_timeseries import _canonical_extent
 
 EVENTS_PATH = 'Data/events_processed.json'
 HARVEST_DIR = 'Data/harvest'
@@ -206,24 +207,35 @@ def check_harvest():
     # extent magnitudes sane per type
     LIMITS = {'acres': 3_000_000, 'sq_miles': 50_000,
               'structures': 200_000, 'homes': 200_000}
-    absurd, non_numeric = [], []
+    absurd, salvaged, unusable = [], [], []
     for r in recs:
         for f in r.get('facts', []):
             v, u = f.get('extent_number'), f.get('extent_unit')
             if v is None:
                 continue
             # The LLM sometimes returns a range ([500, 1000]) or a string
-            # rather than a scalar. Those break every downstream numeric
-            # comparison, so surface them rather than crashing on them.
+            # rather than a scalar. build_timeseries._canonical_extent already
+            # normalizes those (a range collapses to its upper end), so the
+            # question is not "is it a scalar" but "can it be read as one".
             if not isinstance(v, (int, float)) or isinstance(v, bool):
-                non_numeric.append((r['event_id'], repr(v)[:40], u))
+                canon = _canonical_extent(v, u)
+                if canon is None:
+                    unusable.append((r['event_id'], repr(v)[:40], u))
+                else:
+                    salvaged.append((r['event_id'], repr(v)[:40], canon[0]))
                 continue
             if u in LIMITS and v > LIMITS[u]:
                 absurd.append((r['event_id'], v, u))
-    report('harvest', 'extent_number is numeric',
-           'PASS' if not non_numeric else 'FAIL',
-           f'{len(non_numeric)} non-scalar values: {non_numeric[:4]}'
-           if non_numeric else '')
+    if unusable:
+        status, detail = 'FAIL', (f'{len(unusable)} values cannot be read as a '
+                                  f'number and are dropped: {unusable[:4]}')
+    elif salvaged:
+        status, detail = 'WARN', (f'{len(salvaged)} non-scalar values '
+                                  f'normalized by _canonical_extent: '
+                                  f'{salvaged[:4]}')
+    else:
+        status, detail = 'PASS', ''
+    report('harvest', 'extent_number readable as a number', status, detail)
     report('harvest', 'extent magnitudes plausible',
            'PASS' if not absurd else 'WARN',
            f'{len(absurd)} implausible: {absurd[:4]}' if absurd else '')
