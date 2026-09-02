@@ -30,8 +30,11 @@ eval = [
     "rouge-score>=0.1.2",
 ]
 # Qwen2.5-VL finetuning / inference (heavy)
+# torch is left unpinned and resolved from PyPI. The cu121 index tops out at
+# 2.5.1, so pinning torch>=2.6 against it is unsatisfiable and fails the whole
+# resolution — including the base dependencies the pipeline needs.
 train = [
-    "torch>=2.6",
+    "torch",
     "torchvision",
     "transformers>=4.49",
     "accelerate>=0.25",
@@ -56,12 +59,4 @@ environments = [
     "sys_platform == 'darwin'",
 ]
 
-# Torch wheels come from the PyTorch index
-[[tool.uv.index]]
-name = "pytorch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
-explicit = true
 
-[tool.uv.sources]
-torch = { index = "pytorch-cu121" }
-torchvision = { index = "pytorch-cu121" }
