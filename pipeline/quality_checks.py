@@ -124,26 +124,44 @@ def check_events(max_km=150.0):
                'no county cache — run: python pipeline/fix_centers.py --audit')
         return
     try:
-        from fix_centers import county_geo
+        from fix_centers import county_geo_cached, in_county
     except Exception as e:
         report('events', 'center within county', 'SKIP', str(e)); return
 
-    far, checked = [], 0
+    # Two different questions, deliberately held apart.
+    #
+    # Outside the county boundary is a placement we tolerate: an LLM estimate
+    # that lands just over the line still images ground near the event, and
+    # replacing it with a county centroid can put the chip further away than
+    # the estimate it discards. We accept ~8% of these.
+    #
+    # Hundreds of km away is never tolerable — that was the Fajardo-in-Georgia
+    # bug — so it stays a hard failure at any rate above zero.
+    outside, gross, checked = [], [], 0
     for k, v in valid.items():
-        centroid, _ = county_geo(v.get('county'), v.get('state'), cache)
+        centroid, bbox = county_geo_cached(v.get('county'), v.get('state'),
+                                           cache)
         if centroid is None:
             continue
         checked += 1
         d = haversine_km(tuple(v['center'][:2]), centroid)
         if d > max_km:
-            far.append((k, round(d)))
+            gross.append((k, round(d)))
+        if not in_county(v['center'], centroid, bbox, max_km):
+            outside.append((k, round(d)))
     if checked:
-        pct = 100 * len(far) / checked
-        status = 'PASS' if pct < 1 else ('WARN' if pct < 5 else 'FAIL')
-        worst = sorted(far, key=lambda x: -x[1])[:5]
-        report('events', f'center within {max_km:.0f}km of county', status,
-               f'{len(far)}/{checked} ({pct:.1f}%) too far; worst: {worst}'
-               if far else '', checked)
+        pct = 100 * len(outside) / checked
+        status = 'PASS' if pct < 5 else ('WARN' if pct < 10 else 'FAIL')
+        worst = sorted(outside, key=lambda x: -x[1])[:5]
+        report('events', 'center inside county boundary', status,
+               f'{len(outside)}/{checked} ({pct:.1f}%) outside; '
+               f'accepted below 10%. worst: {worst}' if outside else '',
+               checked)
+        report('events', f'no center more than {max_km:.0f}km from its county',
+               'PASS' if not gross else 'FAIL',
+               f'{len(gross)} grossly misplaced: '
+               f'{sorted(gross, key=lambda x: -x[1])[:5]}' if gross else '',
+               checked)
 
 
 # ── HARVEST ─────────────────────────────────────────────────────────────────
