@@ -22,6 +22,7 @@ import os
 from datetime import datetime, timedelta
 
 HARVEST_DIR = 'Data/harvest'
+EVENTS_PATH = 'Data/events_processed.json'
 IMAGES_DIR = 'Data/images'
 
 CLOUD_THRESHOLD = 70      # max scene-level cloud cover %
@@ -140,6 +141,61 @@ def target_dates(rec, baseline_days=21, recovery_days=30):
     return [baseline] + fd + [recovery]
 
 
+MANIFEST_NAME = '_manifest.json'
+
+
+def _write_manifest(out_dir, center, hw):
+    try:
+        with open(os.path.join(out_dir, MANIFEST_NAME), 'w') as f:
+            json.dump({'center': list(center[:2]), 'halfwidth': hw}, f)
+    except Exception:
+        pass
+
+
+def _purge_if_moved(out_dir, center, hw, tol_frac=0.1):
+    """Delete chips fetched at a different center. Returns how many.
+
+    A directory with no manifest predates this check, so its provenance is
+    unknown and it cannot be trusted to match — but deleting every such
+    directory would discard the whole archive on first run, so those are left
+    alone and reported by prune_stale_imagery instead.
+    """
+    mp = os.path.join(out_dir, MANIFEST_NAME)
+    if not os.path.exists(mp):
+        return 0
+    try:
+        m = json.load(open(mp))
+        old = m.get('center')
+        if not old:
+            return 0
+        # Tolerance scales with the chip: a shift far below the footprint
+        # still images the same scene.
+        tol = max(1.0, float(hw) * 111.0 * tol_frac)
+        moved = _haversine_km(tuple(old[:2]), tuple(center[:2]))
+        if moved <= tol and abs(float(m.get('halfwidth', hw)) - float(hw)) < 1e-9:
+            return 0
+    except Exception:
+        return 0
+    n = 0
+    for f in os.listdir(out_dir):
+        if f.endswith(('.png', '.jpg')):
+            try:
+                os.remove(os.path.join(out_dir, f))
+                n += 1
+            except Exception:
+                pass
+    return n
+
+
+def _haversine_km(a, b):
+    import math
+    R = 6371.0
+    p1, p2 = math.radians(a[0]), math.radians(b[0])
+    dp, dl = math.radians(b[0] - a[0]), math.radians(b[1] - a[1])
+    h = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+    return 2 * R * math.asin(math.sqrt(h))
+
+
 def download_event(rec, out_root=IMAGES_DIR, pad_before=30, pad_after=45,
                    max_images=24):
     """Fetch every clear acquisition across the event window.
@@ -157,6 +213,12 @@ def download_event(rec, out_root=IMAGES_DIR, pad_before=30, pad_after=45,
 
     out_dir = os.path.join(out_root, str(eid))
     os.makedirs(out_dir, exist_ok=True)
+
+    # Chips are skipped when the file already exists, which makes a chip
+    # outlive the coordinate it was fetched at: relocation moved 3,139 centers
+    # and every existing chip silently stayed. Record what each directory was
+    # fetched for, and discard it when that no longer matches.
+    stale = _purge_if_moved(out_dir, center, hw)
 
     lat, lon = center[0], center[1]
     region = ee.Geometry.Rectangle([lon - hw, lat - hw, lon + hw, lat + hw])
@@ -243,14 +305,20 @@ def download_event(rec, out_root=IMAGES_DIR, pad_before=30, pad_after=45,
         except Exception as e:
             errors.append(f'{date_str}: {str(e)[:80]}')
 
+    _write_manifest(out_dir, center, hw)
+
     return {'event_id': eid, 'window': [lo, hi], 'n_available': len(best_per_date),
             'saved': saved, 'rejected': rejected, 'errors': errors,
-            'n_saved': len(saved), 'n_rejected': len(rejected)}
+            'n_saved': len(saved), 'n_rejected': len(rejected),
+            'n_purged': stale}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--harvest-dir', default=HARVEST_DIR)
+    ap.add_argument('--events', default=EVENTS_PATH,
+                    help='Authoritative centers; overrides the copy '
+                         'stored in each harvest record')
     ap.add_argument('--out', default=IMAGES_DIR)
     ap.add_argument('--event', nargs='+', type=int, default=None)
     ap.add_argument('--all', action='store_true')
@@ -277,6 +345,31 @@ def main():
 
     if not recs:
         print('No harvest records'); return
+
+    # The harvest record snapshots the center at harvest time, but
+    # fix_centers.py repairs events_processed.json. Downloading from the
+    # harvest copy therefore re-fetches the pre-relocation coordinate no
+    # matter how many times the chips are deleted. events_processed.json is
+    # the authoritative center; the harvest copy is a stale duplicate.
+    diverged = 0
+    if os.path.exists(args.events):
+        ev = json.load(open(args.events))
+        for r in recs:
+            e = ev.get(str(r['event_id']))
+            if not e or not e.get('center'):
+                continue
+            if list(e['center'][:2]) != list((r.get('center') or [None, None])[:2]):
+                diverged += 1
+            r['center'] = e['center']
+            if e.get('halfwidth'):
+                r['halfwidth'] = e['halfwidth']
+        if diverged:
+            print(f'{diverged} events have a repaired center that the harvest '
+                  f'record predates — using {args.events}')
+    else:
+        print(f'WARNING: {args.events} not found; falling back to the center '
+              f'stored in each harvest record, which may predate relocation.')
+
     print(f'Downloading imagery for {len(recs)} events\n')
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -296,6 +389,9 @@ def main():
 
     total = sum(r.get('n_saved', 0) for r in results)
     total_rej = sum(r.get('n_rejected', 0) for r in results)
+    total_purged = sum(r.get('n_purged', 0) for r in results)
+    if total_purged:
+        print(f'\npurged {total_purged} chips fetched at a superseded center')
     ok = sum(1 for r in results if r.get('n_saved'))
     print(f'\n{total} frames across {ok}/{len(results)} events '
           f'({total_rej} rejected for cloud/no-data) -> {args.out}')
