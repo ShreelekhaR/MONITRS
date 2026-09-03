@@ -30,6 +30,31 @@ NODATA_PCT_MAX = 60.0     # reject only frames that are mostly off-swath
 WHITE_PCT_MAX = 80.0      # reject only near-total cloud/snow whiteout
 IMG_SIZE = 512
 
+# True-colour rendering. REFL_MAX is the reflectance mapped to white; GAMMA
+# is what makes the result readable.
+#
+# A linear 0-0.3 stretch (what this used to do) puts dense conifer forest at
+# reflectance ~0.02-0.04, i.e. DN 17-34 of 255: measured on a clear pre-fire
+# chip, 92% of the scene fell below DN 40 and the whole landscape rendered as
+# near-black mud. A burn scar sits at ~0.03-0.06, so the single most visible
+# thing Sentinel-2 shows was being compressed into a dozen grey levels --
+# invisible to the RGB proxies in test_visual_signal.py, and invisible to the
+# model we are building this for. Gamma 2.2 lifts that forest to DN ~75-110
+# and spreads the scar clear of it.
+#
+# It is a FIXED transform, deliberately: a per-frame percentile stretch would
+# look better still and would destroy the cross-date comparability the whole
+# timeseries depends on.
+REFL_MAX = 0.3
+GAMMA = 2.2
+
+# Bumped whenever the rendering above changes. Chips carrying an older version
+# are refetched, because a dataset half in one rendering and half in another
+# lets a model read the render version instead of the ground -- and since
+# rendering would correlate with when an event was harvested, that is a
+# shortcut straight past the imagery.
+RENDER_VERSION = 2
+
 
 def frame_quality(png_bytes):
     """Reject unusable frames. Returns (ok, stats).
@@ -147,34 +172,42 @@ MANIFEST_NAME = '_manifest.json'
 def _write_manifest(out_dir, center, hw):
     try:
         with open(os.path.join(out_dir, MANIFEST_NAME), 'w') as f:
-            json.dump({'center': list(center[:2]), 'halfwidth': hw}, f)
+            json.dump({'center': list(center[:2]), 'halfwidth': hw,
+                       'render': RENDER_VERSION}, f)
     except Exception:
         pass
 
 
-def _purge_if_moved(out_dir, center, hw, tol_frac=0.1):
-    """Delete chips fetched at a different center. Returns how many.
+def _purge_if_stale(out_dir, center, hw, tol_frac=0.1):
+    """Delete chips that no longer match how we would fetch them now.
 
-    A directory with no manifest predates this check, so its provenance is
-    unknown and it cannot be trusted to match — but deleting every such
-    directory would discard the whole archive on first run, so those are left
-    alone and reported by prune_stale_imagery instead.
+    Two ways a chip goes stale: the event's center was repaired after it was
+    downloaded, so it images the wrong place; or it was rendered by an older
+    RENDER_VERSION, so it does not belong in the same dataset as the rest.
+
+    A directory with no manifest predates versioning. Its center cannot be
+    checked — that is left to prune_stale_imagery, which can compare against
+    center_original — but its render version is known by elimination: it is
+    older than 2, so it goes.
     """
     mp = os.path.join(out_dir, MANIFEST_NAME)
-    if not os.path.exists(mp):
-        return 0
     try:
-        m = json.load(open(mp))
-        old = m.get('center')
-        if not old:
-            return 0
+        m = json.load(open(mp)) if os.path.exists(mp) else {}
+    except Exception:
+        m = {}
+    stale = int(m.get('render', 1)) != RENDER_VERSION
+    old = m.get('center')
+    if not stale and old:
         # Tolerance scales with the chip: a shift far below the footprint
         # still images the same scene.
-        tol = max(1.0, float(hw) * 111.0 * tol_frac)
-        moved = _haversine_km(tuple(old[:2]), tuple(center[:2]))
-        if moved <= tol and abs(float(m.get('halfwidth', hw)) - float(hw)) < 1e-9:
-            return 0
-    except Exception:
+        try:
+            tol = max(1.0, float(hw) * 111.0 * tol_frac)
+            moved = _haversine_km(tuple(old[:2]), tuple(center[:2]))
+            stale = (moved > tol or
+                     abs(float(m.get('halfwidth', hw)) - float(hw)) >= 1e-9)
+        except Exception:
+            stale = False
+    if not stale:
         return 0
     n = 0
     for f in os.listdir(out_dir):
@@ -215,10 +248,11 @@ def download_event(rec, out_root=IMAGES_DIR, pad_before=30, pad_after=45,
     os.makedirs(out_dir, exist_ok=True)
 
     # Chips are skipped when the file already exists, which makes a chip
-    # outlive the coordinate it was fetched at: relocation moved 3,139 centers
-    # and every existing chip silently stayed. Record what each directory was
-    # fetched for, and discard it when that no longer matches.
-    stale = _purge_if_moved(out_dir, center, hw)
+    # outlive the conditions it was fetched under: relocation moved 3,139
+    # centers and every existing chip silently stayed, and the same would
+    # happen to the rendering. Record what each directory was fetched for,
+    # and discard it when that no longer matches.
+    stale = _purge_if_stale(out_dir, center, hw)
 
     lat, lon = center[0], center[1]
     region = ee.Geometry.Rectangle([lon - hw, lat - hw, lon + hw, lat + hw])
@@ -288,7 +322,8 @@ def download_event(rec, out_root=IMAGES_DIR, pad_before=30, pad_after=45,
             continue
         try:
             img = (ee.Image(img_id).select(['B4', 'B3', 'B2'])
-                   .divide(10000).clamp(0, 0.3).divide(0.3).multiply(255).toByte())
+                   .divide(10000).clamp(0, REFL_MAX).divide(REFL_MAX)
+                   .pow(1.0 / GAMMA).multiply(255).toByte())
             url = img.getThumbURL({'region': region, 'dimensions': IMG_SIZE,
                                    'format': 'png'})
             r = requests.get(url, timeout=120)
