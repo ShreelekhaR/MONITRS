@@ -299,13 +299,59 @@ def check_imagery():
            f'{len(thin)} events with <3 frames: {thin[:8]}' if thin else '',
            len(counts))
 
-    # identical frames across DIFFERENT events => same coordinates => bad centers
-    cross = {h: v for h, v in all_hashes.items()
-             if len({x.split('/')[0] for x in v}) > 1}
-    report('imagery', 'no identical frames across events',
-           'PASS' if not cross else 'FAIL',
-           f'{len(cross)} images shared between events — duplicate centers. '
-           f'e.g. {list(cross.values())[0][:3]}' if cross else '')
+    # Identical frames across events. Two cases, and only one is a defect.
+    #
+    # Different counties sharing a chip means a center is wrong — that is how
+    # the pre-relocation coordinates surfaced, and it stays a hard failure.
+    #
+    # The same county sharing a chip is expected: FEMA declares one county for
+    # several disasters, sometimes on the same day (Nogal Canyon and McBride
+    # both hit Lincoln County NM on 2022-04-12), and one chip covers both.
+    # County-level holdout keeps these on the same side of the split, so it is
+    # duplicate supervision rather than leakage — a deduplication decision.
+    ev_meta = {}
+    if os.path.exists(EVENTS_PATH):
+        try:
+            ev_meta = json.load(open(EVENTS_PATH))
+        except Exception:
+            pass
+
+    def county_of(d):
+        v = ev_meta.get(d.replace('event_', '').replace('ev', ''), {})
+        return (v.get('state'), v.get('county'))
+
+    cross_county, same_county = {}, {}
+    for h, v in all_hashes.items():
+        eids = {x.split('/')[0] for x in v}
+        if len(eids) < 2:
+            continue
+        counties = {county_of(e) for e in eids}
+        if len(counties) > 1 or counties == {(None, None)}:
+            cross_county[h] = v
+        else:
+            same_county[h] = v
+
+    report('imagery', 'no identical frames across counties',
+           'PASS' if not cross_county else 'FAIL',
+           f'{len(cross_county)} images shared between events in DIFFERENT '
+           f'counties — a center is wrong. '
+           f'e.g. {list(cross_county.values())[0][:3]}' if cross_county else '')
+
+    if same_county:
+        pairs = set()
+        for v in same_county.values():
+            e = sorted({x.split('/')[0] for x in v})
+            for i in range(len(e)):
+                for j in range(i + 1, len(e)):
+                    pairs.add((e[i], e[j]))
+        ex = ', '.join(f'{a}/{b}' for a, b in sorted(pairs)[:5])
+        report('imagery', 'no duplicate chips within a county', 'WARN',
+               f'{len(same_county)} images shared by {len(pairs)} event pairs '
+               f'in the same county ({ex}). Same ground, two declarations — '
+               f'duplicate supervision, not leakage. Run '
+               f'find_identical_frames.py to decide which to keep.')
+    else:
+        report('imagery', 'no duplicate chips within a county', 'PASS')
 
     # identical frames within an event => nothing changed, or a stuck download
     dupe_within = 0
