@@ -426,7 +426,8 @@ def main():
     total_rej = sum(r.get('n_rejected', 0) for r in results)
     total_purged = sum(r.get('n_purged', 0) for r in results)
     if total_purged:
-        print(f'\npurged {total_purged} chips fetched at a superseded center')
+        print(f'\npurged {total_purged} chips fetched at a superseded center '
+              f'or an older rendering (now v{RENDER_VERSION})')
     ok = sum(1 for r in results if r.get('n_saved'))
     print(f'\n{total} frames across {ok}/{len(results)} events '
           f'({total_rej} rejected for cloud/no-data) -> {args.out}')

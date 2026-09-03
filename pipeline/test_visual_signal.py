@@ -58,6 +58,14 @@ OUT_PATH = 'Data/visual_signal.json'
 # typical, and it varies with latitude). Resampling to a fixed square makes
 # one grid cell the same fraction of the footprint in every event, so cell
 # counts are comparable across the dataset.
+# Chips are written for display, with the gamma from download_imagery's
+# RENDER_VERSION 2. Display gamma is for the model's eyes; a ratio of display
+# values is not a ratio of reflectance, and measuring on it shrinks every
+# proxy by roughly the gamma exponent. Undo it here so the proxies are
+# physical again and the thresholds below mean the same thing whatever
+# rendering we ship.
+DISPLAY_GAMMA = 2.2
+
 RESIZE = 256
 GRID = 16                    # finest grid: ~0.7 km cells on an 11 km chip
 SCALES = (1, 2, 4, 8, 16)    # chip-wide -> ~0.7 km
@@ -188,13 +196,17 @@ def frame_metrics(path):
     if im.size[0] < GRID * 2 or im.size[1] < GRID * 2:
         return None
     im = im.resize((RESIZE, RESIZE), Image.BILINEAR)
-    a = np.asarray(im, dtype=np.float32)
+    dn = np.asarray(im, dtype=np.float32)
 
-    lum = a.mean(axis=2)
-    # Ignore no-data and saturated pixels so they don't dominate the means
-    valid = (lum > 12) & (lum < 245)
+    # Ignore no-data and saturated pixels so they don't dominate the means.
+    # Thresholded on display values, where they were chosen.
+    dn_lum = dn.mean(axis=2)
+    valid = (dn_lum > 12) & (dn_lum < 245)
     if valid.mean() < 0.35:
         return None
+
+    a = np.power(dn / 255.0, DISPLAY_GAMMA) * 255.0
+    lum = a.mean(axis=2)
 
     r, g, b = a[..., 0], a[..., 1], a[..., 2]
     total = np.clip(r + g + b, 1e-6, None)
@@ -302,10 +314,13 @@ def analyze_event(ev):
     def mean_of(rows, k):
         return float(np.mean([r[k] for r in rows]))
 
-    def grid_mean_of(grids):
+    def combine(grids):
+        """Median, not mean: thin haze passes the frame-quality gate and one
+        hazy frame in a post-event set drags the whole composite the wrong
+        way. A median ignores it as long as most frames are clear."""
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            return np.nanmean(np.stack(grids), axis=0)
+            return np.nanmedian(np.stack(grids), axis=0)
 
     ephemeral = etype in EPHEMERAL_TYPES
     expected = EXPECTED.get(etype, [])
@@ -355,7 +370,7 @@ def analyze_event(ev):
 
         hit = miss = peak = None
         for mode, pg, pv in modes:
-            base = grid_mean_of(pg)
+            base = combine(pg)
             noise = _noise_grid(pg)
             if ephemeral:
                 # Transient signature: the strongest single post frame, not
@@ -372,8 +387,8 @@ def analyze_event(ev):
                     if hit is None or max(a['net'], b['net']) > max(hit['net'], miss['net']):
                         hit, miss, peak = a, b, d
             else:
-                a = search(base, grid_mean_of(pv), noise, want, mode)
-                b = search(base, grid_mean_of(pv), noise, opp, mode)
+                a = search(base, combine(pv), noise, want, mode)
+                b = search(base, combine(pv), noise, opp, mode)
                 if a is None or b is None:
                     continue
                 hit, miss = better(hit, a), better(miss, b)
@@ -498,20 +513,27 @@ def main():
         counts[r['verdict']] += 1
     print(f'\nverdicts: {dict(counts)}')
 
+    # Events with one pre frame have no measure of ordinary variation, so
+    # their scores are not comparable with the rest and would distort a mean.
+    scored = [r for r in results.values()
+              if 'signal_strength' in r and r.get('n_pre', 0) >= 2]
+    n_thin = sum(1 for r in results.values()
+                 if 'signal_strength' in r and r.get('n_pre', 0) < 2)
     by_type = defaultdict(list)
-    for r in results.values():
-        if 'signal_strength' in r:
-            by_type[r['type']].append(r['signal_strength'])
+    for r in scored:
+        by_type[r['type']].append(r['signal_strength'])
     if by_type:
         print('\nmean signal strength by type '
               '(localized vs what a chip-wide mean would have seen):')
         chip = defaultdict(list)
-        for r in results.values():
-            if 'signal_strength' in r:
-                chip[r['type']].append(r.get('chip_wide_strength', 0.0))
+        for r in scored:
+            chip[r['type']].append(r.get('chip_wide_strength', 0.0))
         for t, xs in sorted(by_type.items(), key=lambda x: -np.mean(x[1])):
             print(f'   {t:<20} {np.mean(xs):.3f}  '
                   f'(chip-wide {np.mean(chip[t]):.3f})  (n={len(xs)})')
+    if n_thin:
+        print(f'\n{n_thin} events excluded from the table: one pre-event '
+              f'frame, so nothing to measure ordinary variation against.')
     print(f'\nwrote {args.out}')
 
 
