@@ -26,8 +26,12 @@ import argparse
 import json
 import os
 import re
+import sys
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_timeseries import coerce_number
 
 HARVEST_DIR = 'Data/harvest'
 IMAGES_DIR = 'Data/images'
@@ -65,11 +69,17 @@ def extent_timeseries(rec):
         d = f.get('extent_as_of_date') or f.get('pub_date')
         if not d or not _d(d):
             continue
+        # The LLM returns a range or a string often enough to matter: three
+        # facts in the 664-event harvest are lists, and comparing a list to a
+        # float raises rather than sorting.
+        val = coerce_number(f['extent_number'])
+        if val is None:
+            continue
         unit = f.get('extent_unit') or 'units'
         prev = by_date.get(d)
         # if multiple articles report the same date, take the larger figure
-        if prev is None or f['extent_number'] > prev['value']:
-            by_date[d] = {'date': d, 'value': float(f['extent_number']),
+        if prev is None or val > prev['value']:
+            by_date[d] = {'date': d, 'value': val,
                           'unit': unit, 'contained': f.get('contained_pct'),
                           'source': f.get('domain'), 'url': f.get('url')}
     ts = [by_date[k] for k in sorted(by_date)]
@@ -92,7 +102,10 @@ def containment_timeseries(rec):
         d = f.get('extent_as_of_date') or f.get('pub_date')
         if not d or not _d(d):
             continue
-        by_date[d] = max(by_date.get(d, 0.0), float(c))
+        cv = coerce_number(c)
+        if cv is None:
+            continue
+        by_date[d] = max(by_date.get(d, 0.0), cv)
     return [{'date': k, 'value': by_date[k]} for k in sorted(by_date)]
 
 
