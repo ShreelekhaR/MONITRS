@@ -177,6 +177,19 @@ def _pool(grid, k):
         return np.nanmean(grid.reshape(k, f, k, f), axis=(1, 3))
 
 
+def _squash(net):
+    """Map an unbounded change onto (0, 1) without a cliff at the top.
+
+    A hard cap at 1.0 saturated whole categories: snow at reflectance ~0.6
+    against winter ground at ~0.1 is a 500% change, so every strong ice storm
+    scored exactly 1.000 and the category could not be ranked internally while
+    its mean sat far above types with subtler signatures. net/(1+net) is
+    monotonic, so ranking survives, and it barely moves the verdict
+    thresholds: 0.15 now means a raw change of 0.18, 0.05 means 0.053.
+    """
+    return net / (1.0 + net) if net > 0 else 0.0
+
+
 def _top_mean(x, frac=TOP_FRAC):
     """Mean of the largest `frac` of finite values -- a max that one bad cell
     cannot carry. At coarse scales this is just the single largest cell."""
@@ -402,7 +415,10 @@ def analyze_event(ev):
              'delta': round(deltas[chan], 5),
              'rel_change': round(rel[chan], 4),
              'match': matched,
-             'magnitude': round(min(max(win['net'], 0.0), 1.0), 4),
+             'magnitude': round(_squash(max(win['net'], 0.0)), 4),
+             # Unsquashed, so a saturating category can still be ranked and
+             # so the raw size of the change stays visible.
+             'net_raw': round(win['net'], 4),
              'chip_wide': round(min(abs(rel[chan]), 1.0), 4),
              'scale_cells': win['cells'],
              'mode': win['mode'],
@@ -412,12 +428,15 @@ def analyze_event(ev):
             c['peak_frame'] = peak
         checks.append(c)
 
+    wrong = None
     if not checks:
         verdict, strength, win = 'no_expectation', 0.0, None
     else:
         matched = [c for c in checks if c['match']]
         win = max(matched, key=lambda c: c['magnitude'], default=None)
         strength = win['magnitude'] if win else 0.0
+        wrong = max((c for c in checks if not c['match']),
+                    key=lambda c: c['magnitude'], default=None)
         strong_wrong = [c for c in checks
                         if not c['match'] and c['magnitude'] > 0.15]
         if not matched and strong_wrong:
@@ -471,6 +490,11 @@ def analyze_event(ev):
         'area_frac': win['area_frac'] if win else None,
         # What a chip-wide mean would have scored, for comparison.
         'chip_wide_strength': win['chip_wide'] if win else 0.0,
+        # For a CONTRADICTED event, strength is 0 by construction -- nothing
+        # matched. This is the size of the change that went the wrong way,
+        # which is the only number that says how badly.
+        'wrong_way_strength': round(wrong['magnitude'], 4) if wrong else None,
+        'wrong_way_channel': wrong['channel'] if wrong else None,
         'verdict': verdict,
     }
 

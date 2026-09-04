@@ -12,7 +12,7 @@ metric claims" in one glance.
 
 Usage:
     python pipeline/spot_check.py --verdict CONTRADICTED --n 12
-    python pipeline/spot_check.py --type "Severe Ice Storm" --top 8
+    python pipeline/spot_check.py --type "Severe Ice Storm" --top --n 8
     python pipeline/spot_check.py --event 5381 5357
 """
 
@@ -56,7 +56,10 @@ def sheet(eid, ev, sig, meta, path):
             f'{strength:.3f}'
             + (f'  @{cells}x{cells}' if cells else '')
             + (f'  {area:.0%} of chip' if area is not None else '')
-            + f'  |  chip-wide {sig.get("chip_wide_strength",0):.3f}'
+            + (f'  |  WRONG WAY {sig["wrong_way_strength"]:.3f} on '
+               f'{sig.get("wrong_way_channel","?")}'
+               if sig.get('wrong_way_strength') else
+               f'  |  chip-wide {sig.get("chip_wide_strength",0):.3f}')
             + f'  hw={meta.get("halfwidth","?")} {meta.get("strategy","?")}')
     d.text((6, 7), head[:170], fill=(230, 230, 230))
 
