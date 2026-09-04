@@ -25,10 +25,12 @@ misses the fire has no resolution worth keeping.
 
 Needs FIRMS_MAP_KEY (free: https://firms.modaps.eosdis.nasa.gov/api/map_key/).
 
+Reports without changing anything unless --write is passed.
+
 Usage:
-    python pipeline/place_fires.py --dry-run
+    python pipeline/place_fires.py --harvested            # report only
     python pipeline/place_fires.py --event 5381 5357
-    python pipeline/place_fires.py --write
+    python pipeline/place_fires.py --harvested --write
 """
 
 import argparse
@@ -218,6 +220,8 @@ def main():
     ap.add_argument('--harvest-dir', default='Data/harvest')
     ap.add_argument('--write', action='store_true',
                     help='Write centers back; otherwise report only')
+    ap.add_argument('--dry-run', action='store_true',
+                    help='Explicit no-op: reporting is already the default')
     args = ap.parse_args()
 
     key = os.environ.get('FIRMS_MAP_KEY', '').strip()
