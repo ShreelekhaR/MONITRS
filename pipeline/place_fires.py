@@ -450,7 +450,8 @@ def main():
               f'than a chip width) -- not written unless --write-weak:')
         for k, d, c, sh, nc in weak[:10]:
             print(f'  ev{k:<6} {d:>6.1f} km   {c["n"]:>4} dets  '
-                  f'{sh:>4.0%} of county frp  {nc} cluster(s)  '
+                  f'{"solo" if sh is None else f"{sh:.0%}"} of county frp  '
+                  f'{nc} cluster(s)  '
                   f'{c["span_km"][0]:.0f}x{c["span_km"][1]:.0f} km')
 
     if near_edge:
