@@ -57,7 +57,9 @@ IMG_SIZE = 512            # must match download_imagery.IMG_SIZE
 # is the fallback for events before VIIRS coverage.
 SOURCES = ['VIIRS_SNPP_SP', 'MODIS_SP']
 MAX_DAY_RANGE = 5         # hard limit of the area/csv endpoint
-THROTTLE_S = 1.0
+# FIRMS allows 5000 transactions per 10 minutes. 0.4s is 150/min, well
+# under, and 214 events at 1.0s was 40 minutes of mostly sleeping.
+THROTTLE_S = 0.4
 
 # Padding around the FEMA window. Fires are usually burning before the
 # declaration and keep burning after the end date.
@@ -126,7 +128,8 @@ def fetch_hotspots(bbox, start, end, key, cache_path):
             except Exception:
                 pass
             cur += timedelta(days=span)
-            time.sleep(THROTTLE_S)
+            if cur <= e:
+                time.sleep(THROTTLE_S)
         if rows and source == SOURCES[0]:
             break        # VIIRS covered it; no need to pay for MODIS as well
 
@@ -254,17 +257,32 @@ def main():
     print(f'{len(fires)} fire events\n')
 
     moved, resized, unplaced, out_of_county = [], [], [], []
-    for k in fires:
+    n = len(fires)
+    t_start = time.time()
+    for i, k in enumerate(fires, 1):
         v = ev[k]
+        cached = os.path.exists(os.path.join(args.firms_cache, f'{k}.json'))
+        done = i - 1
+        eta = ''
+        if done >= 3:
+            rate = (time.time() - t_start) / done
+            eta = f'  ~{rate * (n - done) / 60:.0f}m left'
+        # Printed before the request, without a newline, so the line you
+        # are staring at names the event currently in flight.
+        print(f'[{i}/{n}] ev{k:<6} {(v.get("county") or "")[:20]:<20} '
+              f'{(v.get("state") or ""):<3}{eta}'
+              f'{"" if cached else "  fetching..."}  ', end='', flush=True)
         centroid, bbox = county_geo(v.get('county'), v.get('state'), geo)
         if not bbox_usable(bbox):
             unplaced.append((k, 'no county bbox'))
+            print('no county bbox', flush=True)
             continue
         start = v.get('start_date')
         end = v.get('end_date') or start
         s, e = _parse(start), _parse(end)
         if not s:
             unplaced.append((k, 'no start date'))
+            print('no start date', flush=True)
             continue
         lo = (s - timedelta(days=PAD_BEFORE)).strftime('%Y-%m-%d')
         hi = ((e or s) + timedelta(days=PAD_AFTER)).strftime('%Y-%m-%d')
@@ -274,6 +292,7 @@ def main():
         clusters = cluster(rows)
         if not clusters:
             unplaced.append((k, f'no hotspot cluster in {len(rows)} detections'))
+            print(f'{len(rows)} dets, no cluster', flush=True)
             continue
 
         # The declaration is for one county; the chip has to show that
@@ -284,6 +303,7 @@ def main():
                      if in_county(c['center'], centroid, bbox)), None)
         if pick is None:
             out_of_county.append((k, len(clusters)))
+            print(f'{len(clusters)} cluster(s), none in county', flush=True)
             continue
 
         hw = halfwidth_for(pick)
@@ -295,6 +315,11 @@ def main():
             moved.append((k, d, old_c, pick, len(clusters)))
         if abs(hw - float(old_hw)) > 1e-6:
             resized.append((k, old_hw, hw, pick['span_km']))
+
+        move = f'move {d:>5.1f} km' if d is not None else 'no prior center'
+        print(f'{pick["n"]:>6} dets  {len(clusters)} cl  {move}  '
+              f'hw {old_hw}->{hw}  '
+              f'{pick["span_km"][0]:.0f}x{pick["span_km"][1]:.0f} km', flush=True)
 
         if args.write:
             if v.get('center_original') is None:
