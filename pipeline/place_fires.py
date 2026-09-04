@@ -211,6 +211,11 @@ def main():
     ap.add_argument('--firms-cache', default=FIRMS_CACHE)
     ap.add_argument('--event', nargs='+', default=None)
     ap.add_argument('--limit', type=int, default=None)
+    ap.add_argument('--harvested', action='store_true',
+                    help='Only events with a harvest record. Those are the '
+                         'ones with imagery, and each unharvested event is '
+                         'several FIRMS calls spent on a chip nobody fetches.')
+    ap.add_argument('--harvest-dir', default='Data/harvest')
     ap.add_argument('--write', action='store_true',
                     help='Write centers back; otherwise report only')
     args = ap.parse_args()
@@ -227,6 +232,15 @@ def main():
 
     fires = [k for k, v in ev.items()
              if isinstance(v, dict) and v.get('type') == 'Fire' and 'error' not in v]
+    if args.harvested:
+        try:
+            have = {os.path.splitext(f)[0]
+                    for f in os.listdir(args.harvest_dir) if f.endswith('.json')}
+            before = len(fires)
+            fires = [k for k in fires if k in have]
+            print(f'{before - len(fires)} fire events skipped: not harvested yet')
+        except OSError:
+            print(f'no harvest dir at {args.harvest_dir}; placing all fires')
     if args.event:
         want = {str(e) for e in args.event}
         fires = [k for k in fires if k in want]
