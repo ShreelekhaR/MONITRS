@@ -76,10 +76,18 @@ MIN_CLUSTER_DETS = 5
 # altogether -- Riverside County's bbox reaches well into Orange County. A
 # weak pick that moves the chip a long way is worse than no move at all,
 # because the label stays confident while the ground stops matching it.
+# Detection count is the floor, because it is the one quantity that cannot be
+# faked by a lack of competition: FRP share is 100% whenever the pick is the
+# only cluster in the county, which is precisely the case for the five-pixel
+# picks the gate exists to catch. Dominance can only promote, never rescue.
 STRONG_DETS = 50          # unambiguously a wildfire
-STRONG_FRP_SHARE = 0.5    # or: most of the county's radiative power is here
 OK_DETS = 15
-OK_FRP_SHARE = 0.25
+DOMINANT_FRP_SHARE = 0.5  # promotes ok -> strong, when there is a rival
+
+# Distance is a claim, not a measurement. Moving a chip 2 km onto 20 detections
+# costs nothing if it is wrong; moving it 180 km asserts the declaration named
+# a different place entirely, and wants more than 20 pixels behind it.
+LONG_MOVE_KM = 25.0
 
 # Chip sizing. The floor keeps small fires from being fetched at a resolution
 # no coarser than they need; the ceiling stops one 200 km megafire from
@@ -216,21 +224,34 @@ def cluster(rows, res=CLUSTER_RES_DEG):
     return out
 
 
-def confidence(pick, clusters):
+def confidence(pick, clusters, move_km=None):
     """'strong' | 'ok' | 'weak', plus the pick's share of county fire activity.
 
-    Share matters as much as size: a cluster holding 5% of the county's
-    radiative power is one of many fires burning, and nothing says it is the
-    one the declaration names.
+    Share is returned as None when the pick is the only cluster: with nothing
+    to be dominant over, 100% means "we found one fire", not "we found the
+    fire".
     """
-    total = sum(c['frp'] for c in clusters) or 1.0
-    share = pick['frp'] / total
-    if pick['n'] >= STRONG_DETS or share >= STRONG_FRP_SHARE:
+    n = pick['n']
+    share = None
+    if len(clusters) > 1:
+        total = sum(c['frp'] for c in clusters) or 1.0
+        share = pick['frp'] / total
+
+    if n >= STRONG_DETS:
         lvl = 'strong'
-    elif pick['n'] >= OK_DETS and share >= OK_FRP_SHARE:
+    elif n >= OK_DETS:
         lvl = 'ok'
     else:
         lvl = 'weak'
+
+    # Distance first, and it forecloses promotion rather than being offset by
+    # it: a long move already says we distrust where the declaration pointed,
+    # and being the biggest cluster inside a rectangle that may cover the wrong
+    # county is no answer to that.
+    if move_km is not None and move_km > LONG_MOVE_KM and n < STRONG_DETS:
+        lvl = {'strong': 'ok', 'ok': 'weak', 'weak': 'weak'}[lvl]
+    elif lvl == 'ok' and share is not None and share >= DOMINANT_FRP_SHARE:
+        lvl = 'strong'
     return lvl, share
 
 
@@ -293,7 +314,8 @@ def main():
     print(f'{len(fires)} fire events\n')
 
     moved, resized, unplaced, out_of_county = [], [], [], []
-    weak, by_conf = [], {'strong': 0, 'ok': 0, 'weak': 0}
+    weak, near_edge = [], []
+    by_conf = {'strong': 0, 'ok': 0, 'weak': 0}
     n = len(fires)
     t_start = time.time()
     for i, k in enumerate(fires, 1):
@@ -343,11 +365,24 @@ def main():
             print(f'{len(clusters)} cluster(s), none in county', flush=True)
             continue
 
-        lvl, share = confidence(pick, clusters)
         hw = halfwidth_for(pick)
         old_c = v.get('center')
         old_hw = v.get('halfwidth', 0.05)
         d = haversine_km(tuple(old_c[:2]), tuple(pick['center'])) if old_c else None
+        lvl, share = confidence(pick, clusters, d)
+
+        # How far out toward the bbox corner the pick sits. in_county tests a
+        # rectangle, so a pick near 1.0 is plausibly in a neighbouring county
+        # that the rectangle happens to cover. Reported, not gated: a real fire
+        # in the wrong county is still a real fire, and only true county
+        # geometry can settle it.
+        edge = None
+        if centroid and bbox_usable(bbox):
+            half_diag = haversine_km((bbox[0], bbox[2]), (bbox[1], bbox[3])) / 2.0
+            if half_diag > 0:
+                edge = haversine_km(tuple(centroid), tuple(pick['center'])) / half_diag
+                if edge > 0.85:
+                    near_edge.append((k, edge, d or 0.0, pick))
 
         if d is not None and d > 1.0:
             moved.append((k, d, old_c, pick, len(clusters)))
@@ -361,7 +396,8 @@ def main():
         print(f'{pick["n"]:>6} dets  {len(clusters)} cl  {move}  '
               f'hw {old_hw}->{hw}  '
               f'{pick["span_km"][0]:.0f}x{pick["span_km"][1]:.0f} km  '
-              f'{share:.0%} frp  {lvl}', flush=True)
+              f'{"--" if share is None else f"{share:.0%}"} frp  {lvl}',
+              flush=True)
 
         if args.write and (lvl != 'weak' or args.write_weak):
             if v.get('center_original') is None:
@@ -374,7 +410,8 @@ def main():
                 'span_km': [round(x, 1) for x in pick['span_km']],
                 'n_clusters_in_county': len(clusters),
                 'confidence': lvl,
-                'frp_share': round(share, 3),
+                'frp_share': None if share is None else round(share, 3),
+                'bbox_edge_frac': None if edge is None else round(edge, 2),
                 'gsd_m': round(hw * 2 * 111000.0 / IMG_SIZE, 1),
             }
 
@@ -415,6 +452,15 @@ def main():
             print(f'  ev{k:<6} {d:>6.1f} km   {c["n"]:>4} dets  '
                   f'{sh:>4.0%} of county frp  {nc} cluster(s)  '
                   f'{c["span_km"][0]:.0f}x{c["span_km"][1]:.0f} km')
+
+    if near_edge:
+        near_edge.sort(key=lambda r: -r[1])
+        print(f'\n{len(near_edge)} picks sit past 85% of the way to the county '
+              f'bbox corner -- in_county tests a rectangle, so these may be a '
+              f'neighbour\'s fire:')
+        for k, e, d, c in near_edge[:10]:
+            print(f'  ev{k:<6} {e:>4.2f} of half-diagonal   {d:>6.1f} km move   '
+                  f'{c["n"]:>4} dets')
 
     capped = [r for r in resized if r[2] >= MAX_HALFWIDTH - 1e-9]
     if capped:
