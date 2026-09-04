@@ -68,6 +68,19 @@ PAD_BEFORE, PAD_AFTER = 3, 10
 CLUSTER_RES_DEG = 0.02    # ~2 km cells; detections in touching cells are one fire
 MIN_CLUSTER_DETS = 5
 
+# How much evidence a cluster needs before we move a chip onto it. Five
+# detections spanning one grid cell is the floor for FORMING a cluster and far
+# too little for PICKING one: a flare stack, a burn pile and a combine
+# harvester all clear it. `in_county` also tests a bounding rectangle rather
+# than the county, so a weak cluster can be admitted from a neighbour
+# altogether -- Riverside County's bbox reaches well into Orange County. A
+# weak pick that moves the chip a long way is worse than no move at all,
+# because the label stays confident while the ground stops matching it.
+STRONG_DETS = 50          # unambiguously a wildfire
+STRONG_FRP_SHARE = 0.5    # or: most of the county's radiative power is here
+OK_DETS = 15
+OK_FRP_SHARE = 0.25
+
 # Chip sizing. The floor keeps small fires from being fetched at a resolution
 # no coarser than they need; the ceiling stops one 200 km megafire from
 # dragging the whole dataset to a 400 m ground sample.
@@ -203,6 +216,24 @@ def cluster(rows, res=CLUSTER_RES_DEG):
     return out
 
 
+def confidence(pick, clusters):
+    """'strong' | 'ok' | 'weak', plus the pick's share of county fire activity.
+
+    Share matters as much as size: a cluster holding 5% of the county's
+    radiative power is one of many fires burning, and nothing says it is the
+    one the declaration names.
+    """
+    total = sum(c['frp'] for c in clusters) or 1.0
+    share = pick['frp'] / total
+    if pick['n'] >= STRONG_DETS or share >= STRONG_FRP_SHARE:
+        lvl = 'strong'
+    elif pick['n'] >= OK_DETS and share >= OK_FRP_SHARE:
+        lvl = 'ok'
+    else:
+        lvl = 'weak'
+    return lvl, share
+
+
 def halfwidth_for(cl):
     """Chip halfwidth that contains the cluster, within limits."""
     need = max(cl['span_deg'][0], cl['span_deg'][1]) / 2.0 * CHIP_MARGIN
@@ -223,6 +254,11 @@ def main():
     ap.add_argument('--harvest-dir', default='Data/harvest')
     ap.add_argument('--write', action='store_true',
                     help='Write centers back; otherwise report only')
+    ap.add_argument('--write-weak', action='store_true',
+                    help='Also apply weakly-evidenced picks. Off by default: '
+                         'a five-detection cluster is not necessarily a '
+                         'wildfire, and a confident label on the wrong ground '
+                         'is worse than a chip left where it was.')
     ap.add_argument('--dry-run', action='store_true',
                     help='Explicit no-op: reporting is already the default')
     args = ap.parse_args()
@@ -257,6 +293,7 @@ def main():
     print(f'{len(fires)} fire events\n')
 
     moved, resized, unplaced, out_of_county = [], [], [], []
+    weak, by_conf = [], {'strong': 0, 'ok': 0, 'weak': 0}
     n = len(fires)
     t_start = time.time()
     for i, k in enumerate(fires, 1):
@@ -306,6 +343,7 @@ def main():
             print(f'{len(clusters)} cluster(s), none in county', flush=True)
             continue
 
+        lvl, share = confidence(pick, clusters)
         hw = halfwidth_for(pick)
         old_c = v.get('center')
         old_hw = v.get('halfwidth', 0.05)
@@ -315,13 +353,17 @@ def main():
             moved.append((k, d, old_c, pick, len(clusters)))
         if abs(hw - float(old_hw)) > 1e-6:
             resized.append((k, old_hw, hw, pick['span_km']))
+        by_conf[lvl] += 1
+        if lvl == 'weak':
+            weak.append((k, d or 0.0, pick, share, len(clusters)))
 
         move = f'move {d:>5.1f} km' if d is not None else 'no prior center'
         print(f'{pick["n"]:>6} dets  {len(clusters)} cl  {move}  '
               f'hw {old_hw}->{hw}  '
-              f'{pick["span_km"][0]:.0f}x{pick["span_km"][1]:.0f} km', flush=True)
+              f'{pick["span_km"][0]:.0f}x{pick["span_km"][1]:.0f} km  '
+              f'{share:.0%} frp  {lvl}', flush=True)
 
-        if args.write:
+        if args.write and (lvl != 'weak' or args.write_weak):
             if v.get('center_original') is None:
                 v['center_original'] = old_c
             v['center'] = list(pick['center'])
@@ -331,9 +373,13 @@ def main():
                 'n_detections': pick['n'], 'total_frp': round(pick['frp'], 1),
                 'span_km': [round(x, 1) for x in pick['span_km']],
                 'n_clusters_in_county': len(clusters),
+                'confidence': lvl,
+                'frp_share': round(share, 3),
                 'gsd_m': round(hw * 2 * 111000.0 / IMG_SIZE, 1),
             }
 
+    print(f'evidence  strong {by_conf["strong"]:>4}   ok {by_conf["ok"]:>4}   '
+          f'weak {by_conf["weak"]:>4}')
     print(f'moved more than 1 km          {len(moved):>5}')
     print(f'chip resized                  {len(resized):>5}')
     print(f'no cluster inside the county  {len(out_of_county):>5}')
@@ -359,6 +405,25 @@ def main():
             print(f'  ev{k:<6} halfwidth {o} -> {n}  '
                   f'(fire spans {span[0]:.0f}x{span[1]:.0f} km, '
                   f'{n * 2 * 111000 / IMG_SIZE:.0f} m/px)')
+
+    if weak:
+        weak.sort(key=lambda r: -r[1])
+        far = [w for w in weak if w[1] > 11]
+        print(f'\n{len(weak)} weak picks ({len(far)} of them moving further '
+              f'than a chip width) -- not written unless --write-weak:')
+        for k, d, c, sh, nc in weak[:10]:
+            print(f'  ev{k:<6} {d:>6.1f} km   {c["n"]:>4} dets  '
+                  f'{sh:>4.0%} of county frp  {nc} cluster(s)  '
+                  f'{c["span_km"][0]:.0f}x{c["span_km"][1]:.0f} km')
+
+    capped = [r for r in resized if r[2] >= MAX_HALFWIDTH - 1e-9]
+    if capped:
+        over = [r for r in capped
+                if max(r[3]) > MAX_HALFWIDTH * 2 * 111.0]
+        print(f'\n{len(capped)} chips hit the {MAX_HALFWIDTH} halfwidth cap '
+              f'({MAX_HALFWIDTH * 2 * 111000 / IMG_SIZE:.0f} m/px); '
+              f'{len(over)} fires are still larger than the chip that holds '
+              f'them.')
 
     if unplaced:
         print(f'\nunplaced (sample): '
