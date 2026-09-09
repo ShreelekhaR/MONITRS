@@ -439,7 +439,12 @@ def analyze_event(ev):
                     key=lambda c: c['magnitude'], default=None)
         strong_wrong = [c for c in checks
                         if not c['match'] and c['magnitude'] > 0.15]
-        if not matched and strong_wrong:
+        # CONTRADICTED asserts the chip disagrees with its label, which is a
+        # claim about a data error. One pre-event frame cannot support it for
+        # the same reason it cannot support 'strong': with no measure of
+        # ordinary variation, a cloud edge and a real reversal are the same
+        # number. Say 'none' and let the frame count explain why.
+        if not matched and strong_wrong and len(pre) >= 2:
             verdict = 'CONTRADICTED'
         elif strength >= 0.15:
             # A single pre-event frame gives nothing to measure ordinary
