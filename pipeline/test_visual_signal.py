@@ -79,7 +79,15 @@ NOISE_FLOOR = {1: 0.02, 2: 0.03, 4: 0.04, 8: 0.05, 16: 0.07}
 
 # Which channel should move, and in which direction, per disaster type.
 EXPECTED = {
-    'Fire':             [('greenness', 'down'), ('brightness', 'down')],
+    # Brightness is NOT a reliable fire expectation and used to be one. Over
+    # dry grass a burn is bright fuel turning to black char, so brightness
+    # falls; under dense conifer the canopy's visible reflectance is ~0.04 and
+    # removing it exposes brighter soil and ash, so brightness rises. Both are
+    # real, we cannot condition on land cover, and asserting one direction
+    # made every conifer fire contradict its own label -- all 13 CONTRADICTED
+    # fires were brightness, none were greenness. Fire never adds chlorophyll,
+    # so the vegetation channels are the ones that hold either way.
+    'Fire':             [('vegetation', 'down'), ('greenness', 'down')],
     'Flood':            [('wetness', 'up'), ('texture', 'down')],
     'Hurricane':        [('wetness', 'up'), ('greenness', 'down')],
     'Tropical Storm':   [('wetness', 'up')],
@@ -147,19 +155,19 @@ def _denom(pre):
 def _contrast(grid):
     """A cell's value relative to the rest of ITS OWN frame.
 
-    Sun angle, haze and the thumbnail's own stretch move every pixel of a
-    Sentinel-2 chip together, and between two pre-event dates that swing is
-    larger than most disasters: brightness noise floors of 0.45 and 1.33 in
-    the first run, against real signals of a few percent. Dividing by the
-    frame's own mean cancels the global term and leaves how a cell differs
-    from its surroundings -- which is what a burn scar is.
+    Cancels anything that moved the whole chip together -- sun angle, haze,
+    a different processing baseline. It cancels genuinely chip-wide change
+    too, so this is searched ALONGSIDE the absolute view, never instead of it.
 
-    It cancels genuinely chip-wide change too (snow that whitens everything
-    leaves every cell equally bright relative to its neighbours), so this is
-    searched ALONGSIDE the absolute view, never instead of it.
+    Only defined for a non-negative quantity. Excess Green is signed, and over
+    a mixed scene its frame mean passes near zero, so the ratio explodes: on
+    ev5381 that manufactured a 428% "change" out of a division. A ratio to a
+    mean is meaningless once the mean stops being a scale.
     """
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
+        if np.nanmin(grid) < 0:
+            return None
         m = float(np.nanmean(grid))
     if not np.isfinite(m) or abs(m) < 1e-9:
         return None
@@ -227,6 +235,13 @@ def frame_metrics(path):
         'greenness':  g / total,
         'wetness':    b / total,
         'brightness': lum / 255.0,
+        # Excess Green. greenness is a chromaticity coordinate and barely
+        # moves: ev5357's chip visibly blackens end to end and G/(R+G+B) goes
+        # 0.36 -> 0.32, an 11% change that lands a blatant burn scar on
+        # 'weak'. ExG spans roughly 0.5 for green canopy to 0.0 for bare char
+        # over the same transition, because it differences green against the
+        # other two bands instead of dividing by their sum.
+        'vegetation': (2.0 * g - r - b) / total,
     }
 
     grids, scalars = {}, {}
@@ -274,6 +289,14 @@ def scale_search(pre, post, noise, want, scales=SCALES):
     Returns the scale that maximises change-in-excess-of-noise, so a chip-wide
     snowfall and a four-cell burn scar are both found by the same search
     without either being scored on the other's footprint.
+
+    Noise is subtracted CELL BY CELL. Scoring the top 2% of the signal against
+    the top 2% of the noise compares different ground: one clouded pre-event
+    frame makes the cells it covered wildly variable, and that figure was then
+    charged against a change somewhere else entirely. ev5357's burn scar --
+    the whole chip visibly blackened -- read +0.185 in greenness and was
+    discounted by a floor of 0.142 earned by a cloud that never touched it,
+    scoring 0.042 and a verdict of 'none'.
     """
     best = None
     for k in scales:
@@ -282,23 +305,42 @@ def scale_search(pre, post, noise, want, scales=SCALES):
         rel = (b - a) / denom
         if want == 'down':
             rel = -rel
-        signal = _top_mean(rel)
-        if signal is None:
-            continue
-        floor = NOISE_FLOOR[k]
+
+        # Per-cell bar: whatever that cell does between two ordinary pre-event
+        # dates, floored so a suspiciously steady cell still has to clear
+        # something.
+        bar = np.full_like(rel, NOISE_FLOOR[k])
         if noise is not None:
-            nrel = _top_mean(_pool(noise, k) / denom)
-            floor = max(floor, nrel if nrel is not None else 0.0)
-        net = signal - floor
-        # Fraction of the chip that moved in the wanted direction by more than
-        # the noise -- how big the change was, as distinct from how strong.
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                bar = np.fmax(_pool(noise, k) / denom, NOISE_FLOOR[k])
+
+        excess = rel - bar
+        net = _top_mean(excess)
+        if net is None:
+            continue
+        signal = _top_mean(rel)
+        # Mass: the average excess over the WHOLE chip, counting only cells
+        # that beat their own bar. Strength lives in the tail, but direction
+        # must not: top-2% of a 16x16 grid is five cells, so a scrap of cloud
+        # left in a post composite could outvote a burn scar darkening half
+        # the frame. A mean rather than a sum, so scales stay comparable.
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            fin = np.isfinite(rel)
-            area = float((rel[fin] > floor).mean()) if fin.any() else 0.0
+            mass = float(np.nanmean(np.clip(excess, 0.0, None)))
+        # Reported floor is the typical cell's bar, not the worst one, so it
+        # describes the standard applied rather than a single cloud.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            floor = float(np.nanmedian(bar))
+            # Fraction of the chip that moved in the wanted direction by more
+            # than its own noise -- how big the change was, as distinct from
+            # how strong.
+            fin = np.isfinite(rel) & np.isfinite(bar)
+            area = float((rel[fin] > bar[fin]).mean()) if fin.any() else 0.0
         if best is None or net > best['net']:
             best = {'net': net, 'raw': signal, 'floor': floor,
-                    'cells': k, 'area_frac': area}
+                    'cells': k, 'area_frac': area, 'mass': mass}
     return best
 
 
@@ -341,7 +383,7 @@ def analyze_event(ev):
     # Chip-wide numbers, kept for reporting and for comparison against the
     # localized result -- the gap between them is the dilution.
     deltas, rel = {}, {}
-    for k in ['greenness', 'wetness', 'brightness', 'texture']:
+    for k in ['greenness', 'wetness', 'brightness', 'texture', 'vegetation']:
         base = mean_of(pre, k)
         val = mean_of(post, k)
         deltas[k] = val - base
@@ -408,7 +450,9 @@ def analyze_event(ev):
 
         if hit is None or miss is None:
             continue
-        matched = hit['net'] >= miss['net']
+        # Which way the chip actually moved, by how much of it moved -- not
+        # by which direction owns the single most extreme handful of cells.
+        matched = hit['mass'] >= miss['mass']
         win = hit if matched else miss
         c = {'channel': chan, 'expected': want,
              'observed': want if matched else opp,
