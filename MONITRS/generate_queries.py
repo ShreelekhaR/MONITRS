@@ -14,7 +14,8 @@ Usage:
     python MONITRS/generate_queries.py --n 50 --output Data/generated_queries.csv
 
 Output:
-    Data/generated_queries.csv
+    Data/generated_queries.csv — appended to if it exists, with query_id
+    continuing from the highest one already in the file
 """
 
 import pandas as pd
@@ -149,6 +150,17 @@ def main():
     df = df[(df["local_query"] != "") & (df["english_query"] != "")]
     df = df.drop_duplicates(subset=["english_query"])
 
+    # Append to an existing file: continue numbering from its highest
+    # query_id and drop queries it already has
+    existing = pd.read_csv(args.output) if os.path.exists(args.output) else None
+    next_id = 1
+    if existing is not None and len(existing):
+        next_id = int(existing["query_id"].max()) + 1
+        before = len(df)
+        df = df[~df["english_query"].isin(existing["english_query"])]
+        if len(df) < before:
+            print(f"Dropped {before - len(df)} queries already in {args.output}")
+
     if len(df) < args.n:
         print(f"Warning: asked for {args.n} queries, got {len(df)} usable ones")
 
@@ -161,10 +173,11 @@ def main():
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    df.insert(0, "query_id", range(1, len(df) + 1))
-    df.to_csv(args.output, index=False)
+    df.insert(0, "query_id", range(next_id, next_id + len(df)))
+    df.to_csv(args.output, mode="a", index=False, header=existing is None)
 
-    print(f"\nDone. {len(df)} queries written to {args.output}")
+    print(f"\nDone. {len(df)} queries appended to {args.output} "
+          f"(query_id {next_id} to {next_id + len(df) - 1})")
 
 
 if __name__ == "__main__":

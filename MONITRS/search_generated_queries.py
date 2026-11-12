@@ -20,7 +20,8 @@ Usage:
     python MONITRS/search_generated_queries.py --input Data/generated_queries.csv --output Data/generated_articles.csv
 
 Output:
-    Data/generated_articles.csv
+    Data/generated_articles.csv — appended to; query_ids already in it (and
+    any below its highest query_id) are skipped
 """
 
 import pandas as pd
@@ -78,12 +79,22 @@ def get_web_articles(search_query, ddgs_region, start_date, end_date, max_result
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input', type=str, default='Data/generated_queries2.csv')
+    parser.add_argument('--input', type=str, default='Data/generated_queries.csv')
     parser.add_argument('--output', type=str, default='Data/generated_articles.csv')
     args = parser.parse_args()
 
     df = pd.read_csv(args.input)
     print(f"Queries: {len(df)}")
+
+    # Skip queries already searched. A query that found no links writes no
+    # rows, so also skip everything up to the highest query_id in the output:
+    # queries run in query_id order, so those were all searched already.
+    if os.path.exists(args.output):
+        done = set(pd.read_csv(args.output)["query_id"])
+        if done:
+            last = max(done)
+            df = df[~df["query_id"].isin(done) & (df["query_id"] > last)]
+            print(f"Already searched up to query_id {last}, {len(df)} new queries to search")
 
     # Create output directory if needed
     output_dir = os.path.dirname(args.output)
