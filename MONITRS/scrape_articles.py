@@ -11,6 +11,13 @@ For each query_id (event):
      and a GeoTIFF of all bands (same name, .tif) per date; --rgb-only skips
      the GeoTIFFs
 
+Outputs:
+  --output (JSON)       every event, including failed ones; the resume checkpoint
+  --geojson (GeoJSON)   one Feature per location (image footprint polygon), the
+                        input to generate_article_captions.py; defaults to the
+                        --output path with a .geojson extension
+  --images-dir          {image_dir_id}/ folders of GeoTIFFs and RGB PNGs
+
 Processes --batch-size events per run (default 5), skipping events already in
 the output file, so rerunning continues with the next batch.
 
@@ -19,6 +26,8 @@ Usage:
     export EE_PROJECT_ID=your-earth-engine-project
     python MONITRS/scrape_articles.py
     python MONITRS/scrape_articles.py --batch-size 5 --no-images
+    python MONITRS/scrape_articles.py --articles Data/random_articles.csv \
+        --output Data/random_events_processed.json --images-dir Data/random_images
 """
 
 import requests
@@ -39,6 +48,9 @@ import ee
 from google import genai
 from PIL import Image
 from time import sleep
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from geo_outputs import write_locations_geojson
 
 # --- Config ---
 PROJECT_ID = os.environ.get('GCP_PROJECT_ID', 'your-project-id')
@@ -80,6 +92,7 @@ MAX_IMAGES = 30         # most images downloaded per location; sampled evenly ov
 # 512x512 grid: spectral bands are reflectance x 10000, SCL is the class code.
 S2_BANDS = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'SCL']
 IMG_DIMENSIONS = '512x512'
+FULL_BAND_RETRIES = 4   # attempts per GeoTIFF; Earth Engine 503s / 429s are usually temporary
 
 # Errors meaning the articles had nothing usable; these events are not retried
 EMPTY_ERRORS = {'no_content', 'no_location_events'}
@@ -322,26 +335,35 @@ def download_full_bands(mosaic, region, output_file):
     """Save all S2_BANDS of a mosaic as a GeoTIFF on the same grid as its RGB PNG.
     Returns True on success; never raises, so a failure here doesn't lose the PNG."""
     tmp = output_file + '.part'
-    try:
-        url = mosaic.select(S2_BANDS).toUint16().getDownloadURL({
-            'region': region, 'dimensions': IMG_DIMENSIONS, 'format': 'GEO_TIFF',
-        })
-        r = requests.get(url, timeout=300)
-        # A TIFF starts with II* (little-endian) or MM (big-endian); anything else
-        # is an error page from Earth Engine
-        if r.status_code != 200 or r.content[:2] not in (b'II', b'MM'):
-            log(f"Full-band download failed for {os.path.basename(output_file)}: "
-                f"HTTP {r.status_code} {r.content[:200]!r}")
+    name = os.path.basename(output_file)
+    for attempt in range(1, FULL_BAND_RETRIES + 1):
+        try:
+            url = mosaic.select(S2_BANDS).toUint16().getDownloadURL({
+                'region': region, 'dimensions': IMG_DIMENSIONS, 'format': 'GEO_TIFF',
+            })
+            r = requests.get(url, timeout=300)
+            # A TIFF starts with II* (little-endian) or MM (big-endian); anything else
+            # is an error page from Earth Engine
+            if r.status_code == 200 and r.content[:2] in (b'II', b'MM'):
+                with open(tmp, 'wb') as f:
+                    f.write(r.content)
+                os.replace(tmp, output_file)
+                return True
+            error = f"HTTP {r.status_code} {r.content[:200]!r}"
+            # 429 / 5xx (e.g. 503 "memory capacity exceeded") are temporary server load
+            retryable = r.status_code == 429 or r.status_code >= 500
+        except Exception as e:
+            error, retryable = str(e), True
+            if isfile(tmp):
+                os.remove(tmp)
+        if not retryable or attempt == FULL_BAND_RETRIES:
+            log(f"Full-band download failed for {name}: {error}")
             return False
-        with open(tmp, 'wb') as f:
-            f.write(r.content)
-        os.replace(tmp, output_file)
-        return True
-    except Exception as e:
-        log(f"Full-band download failed for {os.path.basename(output_file)}: {e}")
-        if isfile(tmp):
-            os.remove(tmp)
-        return False
+        wait = 15 * attempt
+        log(f"Full-band download failed for {name} (attempt {attempt}/{FULL_BAND_RETRIES}), "
+            f"retrying in {wait}s: {error[:80]}")
+        sleep(wait)
+    return False
 
 
 def download_images(center, start_date, end_date, event_idx, halfwidth=0.05,
@@ -547,6 +569,30 @@ def process_event(query_id, articles, args=None):
     }
 
 
+def fill_missing_tifs(results):
+    """Download the all-band GeoTIFF for every RGB PNG that has none (e.g. after
+    Earth Engine errors). Returns (filled, still missing)."""
+    filled = missing = 0
+    for ev in results.values():
+        for loc in ev.get('locations') or []:
+            folder = join(ODIR, loc.get('image_dir_id') or '')
+            if not os.path.isdir(folder):
+                continue
+            region = image_region([float(loc['lat']), float(loc['lon'])], float(loc['halfwidth']))
+            prefix = loc['image_dir_id'] + '_'
+            for name in sorted(os.listdir(folder)):
+                tif_file = join(folder, name[:-len('.png')] + '.tif')
+                if not name.endswith('.png') or isfile(tif_file):
+                    continue
+                img_date = name[len(prefix):len(prefix) + 10]   # {id}_{YYYY-MM-DD}_{type}.png
+                log(f"Filling {os.path.basename(tif_file)}")
+                if download_full_bands(date_mosaic(region, img_date), region, tif_file):
+                    filled += 1
+                else:
+                    missing += 1
+    return filled, missing
+
+
 def save_results(results, path):
     # Write to a temp file then rename, so an interrupted write never empties the output
     tmp = path + '.tmp'
@@ -556,18 +602,29 @@ def save_results(results, path):
 
 
 def main():
+    global ODIR
     parser = argparse.ArgumentParser()
+    parser.add_argument('--articles', type=str, default=ARTICLES_FILE,
+                        help='Article links CSV from search_generated_queries.py')
+    parser.add_argument('--images-dir', type=str, default=ODIR,
+                        help='Folder for the image folders ({query_id}_{k}/)')
     parser.add_argument('--batch-size', type=int, default=5, help='Number of events to process this run')
     parser.add_argument('--start', type=int, default=0, help='Only consider query_ids >= this')
     parser.add_argument('--no-images', action='store_true', help='Skip image download (text only)')
     parser.add_argument('--rgb-only', action='store_true',
                         help='Download only the RGB PNGs, not the all-band GeoTIFFs')
-    parser.add_argument('--output', type=str, default=OUTPUT_FILE, help='Output JSON file')
+    parser.add_argument('--output', type=str, default=OUTPUT_FILE, help='Output JSON file (resume checkpoint)')
+    parser.add_argument('--geojson', type=str, default=None,
+                        help='Locations GeoJSON (default: --output with a .geojson extension)')
+    parser.add_argument('--fill-missing-tifs', action='store_true',
+                        help='Only download GeoTIFFs missing next to existing PNGs, then exit')
     parser.add_argument('--retry-empty', action='store_true',
                         help='Also retry events that previously had no content / no location events')
     args = parser.parse_args()
+    ODIR = args.images_dir
+    geojson_path = args.geojson or os.path.splitext(args.output)[0] + '.geojson'
 
-    df = pd.read_csv(ARTICLES_FILE)
+    df = pd.read_csv(args.articles)
     events = {int(qid): g[['url', 'country', 'lang']].to_dict('records')
               for qid, g in df.groupby('query_id')}
 
@@ -579,6 +636,11 @@ def main():
         print(f"Resuming: {len(results)} events in {args.output}")
     else:
         results = {}
+
+    if args.fill_missing_tifs:
+        filled, missing = fill_missing_tifs(results)
+        print(f"Filled {filled} GeoTIFF(s); {missing} still missing")
+        return
 
     def needs_run(q):
         r = results.get(str(q))
@@ -604,6 +666,7 @@ def main():
             results[str(query_id)] = {'error': str(e)}
         finally:
             save_results(results, args.output)
+            write_locations_geojson(results, geojson_path)
 
     # Summary
     done = [results[str(q)] for q in batch if str(q) in results]
@@ -612,6 +675,9 @@ def main():
     n_imgs = sum(len(c.get('image_dates', [])) for v in done for c in v.get('locations', []))
     print(f"\n\n{'='*60}")
     print(f"DONE: {n_ok}/{len(batch)} events processed, {n_locs} locations, {n_imgs} images")
+    if os.path.exists(args.output):
+        n_feat = write_locations_geojson(results, geojson_path)
+        print(f"Locations: {n_feat} -> {geojson_path}")
     print(f"Output: {args.output}")
 
 

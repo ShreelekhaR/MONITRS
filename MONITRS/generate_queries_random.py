@@ -10,9 +10,14 @@ about. Queries follow the same style as get_intl_articles_new.py:
 
     {disaster} {location} {country} {month} {year}
 
+Large runs are split into prompts of at most --batch-size queries (default
+50), and each batch is appended to the output file as soon as it finishes, so
+a crash or Ctrl+C partway through a 10,000-query run keeps the finished
+batches.
+
 Usage:
-    python MONITRS/generate_queries.py
-    python MONITRS/generate_queries.py --n 50 --output Data/generated_queries.csv
+    python MONITRS/generate_queries_random.py
+    python MONITRS/generate_queries_random.py --n 10000 --output Data/random_queries.csv
 
 Output:
     Data/generated_queries.csv — appended to if it exists, with query_id
@@ -22,13 +27,17 @@ Output:
 import pandas as pd
 import os
 import json
+import time
 import random
 import argparse
 
 from google import genai
 
 gemini_client = genai.Client()
-model_name = "gemini-3.1-flash-lite"
+model_name = "gemini-3.5-flash-lite"
+
+MAX_BATCH_SIZE = 50     # most queries asked for in one prompt
+MAX_RETRIES = 3         # attempts per batch before skipping it
 
 COUNTRIES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "countries.csv")
 
@@ -50,10 +59,12 @@ FIELDS = [
 def pick_random_countries(n, path=COUNTRIES_CSV):
     # keep_default_na=False so Namibia's code "NA" isn't read as missing
     names = pd.read_csv(path, keep_default_na=False)["name"].tolist()
-    if n <= len(names):
-        return random.sample(names, n)
-    # More queries than countries: use every country, then repeat at random
-    return random.sample(names, len(names)) + random.choices(names, k=n - len(names))
+    # Go through the countries in shuffled rounds, so with more queries than
+    # countries every country is used equally often (give or take one)
+    countries = []
+    while len(countries) < n:
+        countries += random.sample(names, len(names))
+    return countries[:n]
 
 
 def build_prompt(countries, start_year=2018, end_year=2025):
@@ -147,20 +158,8 @@ def generate_queries(countries, start_year, end_year):
     return queries
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--n', type=int, default=50)
-    parser.add_argument('--start-year', type=int, default=2018)
-    parser.add_argument('--end-year', type=int, default=2025)
-    parser.add_argument('--output', type=str, default='Data/generated_queries.csv')
-    parser.add_argument('--countries', type=str, default=COUNTRIES_CSV)
-    args = parser.parse_args()
-
-    countries = pick_random_countries(args.n, args.countries)
-    print(f"Countries: {', '.join(countries)}")
-
-    queries = generate_queries(countries, args.start_year, args.end_year)
-
+def clean_queries(queries):
+    """Queries as a DataFrame with whitespace cleaned and empty or duplicate queries dropped."""
     df = pd.DataFrame(queries).reindex(columns=FIELDS)
 
     # Same whitespace cleanup as get_intl_articles_new.py
@@ -168,36 +167,96 @@ def main():
         df[col] = df[col].fillna("").astype(str).map(lambda q: " ".join(q.split()))
 
     df = df[(df["local_query"] != "") & (df["english_query"] != "")]
-    df = df.drop_duplicates(subset=["english_query"])
+    return df.drop_duplicates(subset=["english_query"])
 
-    # Append to an existing file: continue numbering from its highest
-    # query_id and drop queries it already has
-    existing = pd.read_csv(args.output) if os.path.exists(args.output) else None
-    next_id = 1
-    if existing is not None and len(existing):
-        next_id = int(existing["query_id"].max()) + 1
-        before = len(df)
-        df = df[~df["english_query"].isin(existing["english_query"])]
-        if len(df) < before:
-            print(f"Dropped {before - len(df)} queries already in {args.output}")
 
-    if len(df) < args.n:
-        print(f"Warning: asked for {args.n} queries, got {len(df)} usable ones")
+def generate_batch(countries, start_year, end_year):
+    """Queries for one batch of countries, retrying failed calls; None if every attempt fails."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return generate_queries(countries, start_year, end_year)
+        except Exception as e:
+            print(f"  Attempt {attempt}/{MAX_RETRIES} failed: {e}")
+            if attempt < MAX_RETRIES:
+                time.sleep(2 ** attempt)
+    return None
 
-    print(f"Countries: {df['english_country'].nunique()}")
-    print(df["disaster_type"].value_counts().to_string())
-    print()
-    print(df[["local_query", "english_query"]].head(10).to_string(index=False))
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--n', type=int, default=50, help='Total number of queries to generate')
+    parser.add_argument('--batch-size', type=int, default=MAX_BATCH_SIZE,
+                        help=f'Queries per prompt (at most {MAX_BATCH_SIZE})')
+    parser.add_argument('--start-year', type=int, default=2018)
+    parser.add_argument('--end-year', type=int, default=2025)
+    parser.add_argument('--output', type=str, default='Data/generated_queries.csv')
+    parser.add_argument('--countries', type=str, default=COUNTRIES_CSV)
+    args = parser.parse_args()
+
+    batch_size = max(1, min(args.batch_size, MAX_BATCH_SIZE))
+    countries = pick_random_countries(args.n, args.countries)
+    batches = [countries[i:i + batch_size] for i in range(0, len(countries), batch_size)]
+    print(f"Generating {args.n} queries in {len(batches)} prompt(s) of up to {batch_size}")
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    df.insert(0, "query_id", range(next_id, next_id + len(df)))
-    df.to_csv(args.output, mode="a", index=False, header=existing is None)
+    # Append to an existing file: continue numbering from its highest
+    # query_id and drop queries it already has
+    seen = set()
+    next_id = 1
+    write_header = True
+    if os.path.exists(args.output):
+        existing = pd.read_csv(args.output)
+        if len(existing):
+            seen = set(existing["english_query"])
+            next_id = int(existing["query_id"].max()) + 1
+            write_header = False
+    first_id = next_id
 
+    added = []
+    failed = 0
+    try:
+        for b, batch in enumerate(batches, 1):
+            print(f"\n[{b}/{len(batches)}] {', '.join(batch)}")
+            queries = generate_batch(batch, args.start_year, args.end_year)
+            if queries is None:
+                print("  Skipping this batch")
+                failed += len(batch)
+                continue
+
+            df = clean_queries(queries)
+            before = len(df)
+            df = df[~df["english_query"].isin(seen)]
+            if len(df) < before:
+                print(f"  Dropped {before - len(df)} duplicate queries")
+            if len(df) < len(batch):
+                print(f"  Warning: asked for {len(batch)} queries, got {len(df)} usable ones")
+
+            df.insert(0, "query_id", range(next_id, next_id + len(df)))
+            df.to_csv(args.output, mode="a", index=False, header=write_header)
+            write_header = False
+            next_id += len(df)
+            seen.update(df["english_query"])
+            added.append(df)
+            print(f"  Appended {len(df)} queries")
+    except KeyboardInterrupt:
+        print("\n\nInterrupted. Finished batches are saved.")
+
+    if not added:
+        print(f"\nNo queries added to {args.output}")
+        return
+
+    df = pd.concat(added)
+    print(f"\nCountries: {df['english_country'].nunique()}")
+    print(df["disaster_type"].value_counts().to_string())
+    print()
+    print(df[["local_query", "english_query"]].head(10).to_string(index=False))
+    if failed:
+        print(f"\n{failed} queries skipped because their batch failed")
     print(f"\nDone. {len(df)} queries appended to {args.output} "
-          f"(query_id {next_id} to {next_id + len(df) - 1})")
+          f"(query_id {first_id} to {next_id - 1})")
 
 
 if __name__ == "__main__":
